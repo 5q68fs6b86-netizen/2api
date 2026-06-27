@@ -1,6 +1,7 @@
 'use strict';
 
 const WebSocket = require('ws');
+const os = require('os');
 const { EXTENSION_VERSION, buildKombaiPayload, randomId } = require('./openaiCompat');
 const { getClientContext } = require('./footprint');
 
@@ -18,10 +19,23 @@ function randomSessionId(length = 16) {
 
 function socketHeaders(apiKey) {
   return {
-    'x-api-key': apiKey,
+    ...(apiKey ? { 'x-api-key': apiKey } : {}),
     'x-type': 'agent',
     'x-editor': process.env.KOMBAI_EDITOR || 'vscode',
     'x-extension-version': EXTENSION_VERSION,
+  };
+}
+
+function restHeaders(options = {}) {
+  return {
+    ...socketHeaders(options.apiKey),
+    'x-editor-version': process.env.KOMBAI_EDITOR_VERSION || 'unknown',
+    'x-os-platform': process.platform,
+    'x-os-architecture': process.arch,
+    'x-os-release': os.release(),
+    ...(options.sessionId ? { 'x-session-id': options.sessionId } : {}),
+    ...(options.contentType ? { 'Content-Type': options.contentType } : {}),
+    'x-client-context': getClientContext(),
   };
 }
 
@@ -176,11 +190,7 @@ async function exchangeAuthCode(code) {
 
   const response = await fetch(url, {
     method: 'GET',
-    headers: {
-      ...socketHeaders(''),
-      'x-session-id': sessionId,
-      'x-client-context': getClientContext(),
-    },
+    headers: restHeaders({ sessionId }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -193,5 +203,6 @@ module.exports = {
   completeChat,
   exchangeAuthCode,
   randomSessionId,
+  restHeaders,
   streamChatCompletion,
 };

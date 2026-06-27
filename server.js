@@ -29,7 +29,16 @@ async function readJson(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const text = Buffer.concat(chunks).toString('utf8');
-  return text ? JSON.parse(text) : {};
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const parseError = new Error('请求体不是合法 JSON');
+    parseError.statusCode = 400;
+    parseError.type = 'invalid_request_error';
+    throw parseError;
+  }
 }
 
 function getBearerToken(req) {
@@ -79,8 +88,8 @@ async function handleChatCompletions(req, res) {
 }
 
 async function handleAuthCode(req, res) {
-  const body = await readJson(req);
   const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+  const body = req.method === 'GET' ? {} : await readJson(req);
   const code = body.code || url.searchParams.get('code');
   if (!code) {
     sendError(res, 400, 'code 必填');
@@ -119,7 +128,7 @@ async function route(req, res) {
     return;
   }
 
-  if (req.method === 'POST' && url.pathname === '/auth/api-key') {
+  if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/auth/api-key') {
     await handleAuthCode(req, res);
     return;
   }
@@ -133,8 +142,17 @@ const server = http.createServer((req, res) => {
       res.destroy(error);
       return;
     }
-    sendError(res, 500, error.message || String(error), 'server_error');
+    const status = error.statusCode || 500;
+    sendError(res, status, error.message || String(error), error.type || 'server_error');
   });
+});
+
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`端口 ${PORT} 已被占用。请设置 PORT=<其他端口> 后重试。`);
+    process.exit(1);
+  }
+  throw error;
 });
 
 server.listen(PORT, () => {
