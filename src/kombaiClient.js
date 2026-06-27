@@ -77,6 +77,81 @@ function normalizeSocketFrame(data) {
   return String(data);
 }
 
+function stringifyToolArguments(input) {
+  if (input === undefined || input === null) return '{}';
+  if (typeof input === 'string') return input;
+  try {
+    return JSON.stringify(input);
+  } catch (_) {
+    return JSON.stringify({ value: String(input) });
+  }
+}
+
+function normalizeToolCall(toolUse) {
+  if (!toolUse || typeof toolUse !== 'object') return null;
+  const name = toolUse.name || toolUse.toolName || (toolUse.function && toolUse.function.name);
+  if (!name) return null;
+  const input = toolUse.input !== undefined
+    ? toolUse.input
+    : toolUse.arguments !== undefined
+      ? toolUse.arguments
+      : toolUse.args;
+
+  return {
+    id: String(toolUse.id || toolUse.toolUseId || toolUse.callId || randomId('call')),
+    type: 'function',
+    function: {
+      name: String(name),
+      arguments: stringifyToolArguments(input),
+    },
+  };
+}
+
+function collectToolUses(value, output = []) {
+  if (!value) return output;
+  if (Array.isArray(value)) {
+    for (const item of value) collectToolUses(item, output);
+    return output;
+  }
+  if (typeof value !== 'object') return output;
+
+  const toolCall = normalizeToolCall(value);
+  if (toolCall) {
+    output.push(toolCall);
+    return output;
+  }
+
+  for (const key of ['toolUse', 'toolUses', 'tools']) {
+    if (value[key]) collectToolUses(value[key], output);
+  }
+  return output;
+}
+
+function toolCallsFromFrame(frame) {
+  if (!frame || typeof frame !== 'object') return [];
+
+  const candidates = [];
+  if (frame.action === 'toolUse') {
+    candidates.push(frame.response, frame.toolUse, frame.toolUses);
+  }
+  candidates.push(
+    frame.response && frame.response.toolUse,
+    frame.response && frame.response.toolUses,
+    frame.toolUse,
+    frame.toolUses,
+  );
+
+  const calls = [];
+  for (const candidate of candidates) collectToolUses(candidate, calls);
+
+  const seen = new Set();
+  return calls.filter((call) => {
+    if (seen.has(call.id)) return false;
+    seen.add(call.id);
+    return true;
+  });
+}
+
 async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
   const requestId = options.requestId || randomId('chatcmpl');
   const sessionId = options.sessionId || randomSessionId();
@@ -135,8 +210,19 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
 
     if (frame.requestId && frame.requestId !== requestId) return;
 
+    const toolCalls = toolCallsFromFrame(frame);
+    if (toolCalls.length > 0) {
+      for (const toolCall of toolCalls) push({ type: 'tool_call', toolCall, raw: frame });
+      return;
+    }
+
     if (frame.action === 'streamMessage' && frame.response && typeof frame.response.text === 'string') {
       push({ type: 'text', text: frame.response.text, raw: frame });
+      return;
+    }
+
+    if (frame.action === 'toolResult') {
+      push({ type: 'tool_result', result: frame.result || frame.response, raw: frame });
       return;
     }
 
@@ -191,6 +277,20 @@ async function completeChat(openaiBody, apiKey, options = {}) {
     if (event.type === 'text') text += event.text;
   }
   return text;
+}
+
+async function collectChatCompletion(openaiBody, apiKey, options = {}) {
+  let text = '';
+  const toolCalls = [];
+  const toolResults = [];
+
+  for await (const event of streamChatCompletion(openaiBody, apiKey, options)) {
+    if (event.type === 'text') text += event.text;
+    if (event.type === 'tool_call') toolCalls.push(event.toolCall);
+    if (event.type === 'tool_result') toolResults.push(event.result);
+  }
+
+  return { text, toolCalls, toolResults };
 }
 
 async function exchangeAuthCode(code) {
@@ -256,6 +356,7 @@ async function verifyApiKey(apiKey) {
 
 module.exports = {
   buildAuthConnectUrl,
+  collectChatCompletion,
   completeChat,
   exchangeAuthCode,
   pollAuthCode,

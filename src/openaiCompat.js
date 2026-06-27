@@ -45,11 +45,8 @@ function messageTextContent(content) {
   return content
     .map((part) => {
       if (!part || typeof part !== 'object') return '';
-      if (part.type === 'text') return part.text || '';
-      if (part.type === 'image_url') {
-        const url = part.image_url && part.image_url.url ? part.image_url.url : 'attached';
-        return `[image: ${url}]`;
-      }
+      if (part.type === 'text' || part.type === 'input_text') return part.text || '';
+      if (imageUrlFromPart(part)) return `[image: ${imageLabel(part, 0)}]`;
       return '';
     })
     .filter(Boolean)
@@ -78,6 +75,146 @@ function editorStateFromPrompt(prompt) {
       },
     ],
   };
+}
+
+function normalizeContentParts(content) {
+  if (typeof content === 'string') return [{ type: 'text', text: content }];
+  if (Array.isArray(content)) return content;
+  return [];
+}
+
+function imageUrlFromPart(part) {
+  if (!part || typeof part !== 'object') return '';
+
+  if (part.type === 'image_url') {
+    if (typeof part.image_url === 'string') return part.image_url;
+    return part.image_url && part.image_url.url ? part.image_url.url : '';
+  }
+
+  if (part.type === 'input_image') {
+    return part.image_url || part.url || '';
+  }
+
+  return '';
+}
+
+function imageLabel(part, index) {
+  const imageUrl = part && typeof part.image_url === 'object' ? part.image_url : {};
+  return part.alt || imageUrl.alt || part.name || `image ${index + 1}`;
+}
+
+function textFromPart(part) {
+  if (!part || typeof part !== 'object') return '';
+  if (part.type === 'text' || part.type === 'input_text') return part.text || '';
+  return '';
+}
+
+function displayImageSource(src, alt) {
+  if (!src) return alt || 'attached';
+  if (src.startsWith('data:')) return alt || 'data-url';
+  return src;
+}
+
+function makeParagraph(text) {
+  return {
+    type: 'paragraph',
+    content: text ? [{ type: 'text', text }] : [],
+  };
+}
+
+function makeImageNode(id, attachment) {
+  return {
+    type: 'image',
+    attrs: {
+      src: attachment.src,
+      alt: attachment.alt,
+      id,
+      ...(attachment.path ? { path: attachment.path } : {}),
+    },
+  };
+}
+
+function buildMessageContext(messages = []) {
+  const imageAttachments = {};
+  const docContent = [];
+  const promptBlocks = [];
+  let imageCount = 0;
+
+  for (const message of messages) {
+    const role = message && message.role ? message.role : 'user';
+    if (role === 'tool') continue;
+
+    const parts = normalizeContentParts(message && message.content);
+    const promptLines = [];
+    const paragraphLines = [];
+    const imageNodes = [];
+
+    for (const part of parts) {
+      const text = textFromPart(part);
+      if (text) {
+        promptLines.push(text);
+        paragraphLines.push(text);
+        continue;
+      }
+
+      const src = imageUrlFromPart(part);
+      if (!src) continue;
+
+      imageCount += 1;
+      const id = part.id || randomId('image');
+      const attachment = {
+        src,
+        alt: imageLabel(part, imageCount - 1),
+        ...(part.path ? { path: part.path } : {}),
+      };
+      imageAttachments[id] = attachment;
+      promptLines.push(`[image: ${displayImageSource(src, attachment.alt)}]`);
+      imageNodes.push(makeImageNode(id, attachment));
+    }
+
+    if (promptLines.length > 0) {
+      promptBlocks.push(`${role.toUpperCase()}:\n${promptLines.join('\n')}`);
+      docContent.push(makeParagraph(`${role.toUpperCase()}:\n${paragraphLines.join('\n')}`));
+      docContent.push(...imageNodes);
+    }
+  }
+
+  return {
+    prompt: promptBlocks.join('\n\n'),
+    imageAttachments,
+    editorState: {
+      type: 'doc',
+      content: docContent.length > 0 ? docContent : [makeParagraph('')],
+    },
+  };
+}
+
+function toolResultContent(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part) => {
+      if (!part || typeof part !== 'object') return '';
+      if (part.type === 'text' || part.type === 'input_text') return part.text || '';
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function extractToolResults(messages = []) {
+  return messages
+    .filter((message) => message && message.role === 'tool')
+    .map((message) => ({
+      toolUseId: message.tool_call_id || message.toolUseId || message.id,
+      result: {
+        error: null,
+        results: {
+          content: toolResultContent(message.content),
+        },
+      },
+    }))
+    .filter((result) => result.toolUseId);
 }
 
 function buildCapabilities() {
@@ -109,7 +246,12 @@ function buildCapabilities() {
 }
 
 function buildKombaiPayload(openaiBody, requestId) {
-  const prompt = openaiBody.prompt || messagesToPrompt(openaiBody.messages);
+  const messageContext = buildMessageContext(openaiBody.messages);
+  const toolResults = extractToolResults(openaiBody.messages);
+  const hasMessageContext = Boolean(messageContext.prompt || Object.keys(messageContext.imageAttachments).length > 0);
+  const prompt = toolResults.length > 0
+    ? '{{tool_results: Tool Results}}'
+    : openaiBody.prompt || messageContext.prompt || messagesToPrompt(openaiBody.messages);
   const workspacePath = process.env.KOMBAI_WORKSPACE_PATH || process.cwd();
   const threadId = openaiBody.thread_id || openaiBody.threadId || randomId('thread');
   const messageType = process.env.KOMBAI_MESSAGE_TYPE || 'chat';
@@ -133,7 +275,7 @@ function buildKombaiPayload(openaiBody, requestId) {
     techStack: {},
     capabilities: buildCapabilities(),
     connectedMcps: [],
-    toolResults: [],
+    toolResults,
     userRules: '',
     repoContext: ['', ''],
     openTabs: {},
@@ -155,7 +297,12 @@ function buildKombaiPayload(openaiBody, requestId) {
     subAction: 'self_serve_pl',
     timestamp: Date.now().toString(),
     requestId,
-    editorState: editorStateFromPrompt(prompt),
+    editorState: toolResults.length > 0
+      ? { type: 'agent/tool-result' }
+      : openaiBody.editorState || (hasMessageContext ? messageContext.editorState : editorStateFromPrompt(prompt)),
+    imageAttachments: messageContext.imageAttachments,
+    openaiTools: Array.isArray(openaiBody.tools) ? openaiBody.tools : [],
+    openaiToolChoice: openaiBody.tool_choice || null,
   };
 
   if (messageType === 'design') {
@@ -170,7 +317,20 @@ function buildKombaiPayload(openaiBody, requestId) {
   return payload;
 }
 
-function makeChatCompletion({ id, model, text, created = Math.floor(Date.now() / 1000), finishReason = 'stop' }) {
+function makeChatCompletion({
+  id,
+  model,
+  text,
+  toolCalls = [],
+  created = Math.floor(Date.now() / 1000),
+  finishReason = 'stop',
+}) {
+  const message = {
+    role: 'assistant',
+    content: text || (toolCalls.length > 0 ? null : ''),
+  };
+  if (toolCalls.length > 0) message.tool_calls = toolCalls;
+
   return {
     id,
     object: 'chat.completion',
@@ -179,7 +339,7 @@ function makeChatCompletion({ id, model, text, created = Math.floor(Date.now() /
     choices: [
       {
         index: 0,
-        message: { role: 'assistant', content: text },
+        message,
         finish_reason: finishReason,
       },
     ],

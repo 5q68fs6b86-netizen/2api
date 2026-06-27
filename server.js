@@ -3,7 +3,7 @@
 const http = require('http');
 const {
   buildAuthConnectUrl,
-  completeChat,
+  collectChatCompletion,
   exchangeAuthCode,
   streamChatCompletion,
 } = require('./src/kombaiClient');
@@ -57,6 +57,10 @@ function writeSse(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
+function finishReasonFor(toolCalls) {
+  return toolCalls.length > 0 ? 'tool_calls' : 'stop';
+}
+
 async function handleChatCompletions(req, res) {
   const apiKey = getBearerToken(req);
   if (!apiKey) {
@@ -77,19 +81,42 @@ async function handleChatCompletions(req, res) {
     });
 
     writeSse(res, makeChatChunk({ id, model, delta: { role: 'assistant' } }));
+    const toolCalls = [];
     for await (const event of streamChatCompletion({ ...body, model }, apiKey, { requestId: id })) {
       if (event.type === 'text' && event.text) {
         writeSse(res, makeChatChunk({ id, model, delta: { content: event.text } }));
       }
+      if (event.type === 'tool_call' && event.toolCall) {
+        const index = toolCalls.length;
+        toolCalls.push(event.toolCall);
+        writeSse(res, makeChatChunk({
+          id,
+          model,
+          delta: {
+            tool_calls: [
+              {
+                index,
+                ...event.toolCall,
+              },
+            ],
+          },
+        }));
+      }
     }
-    writeSse(res, makeChatChunk({ id, model, delta: {}, finishReason: 'stop' }));
+    writeSse(res, makeChatChunk({ id, model, delta: {}, finishReason: finishReasonFor(toolCalls) }));
     res.write('data: [DONE]\n\n');
     res.end();
     return;
   }
 
-  const text = await completeChat({ ...body, model }, apiKey, { requestId: id });
-  sendJson(res, 200, makeChatCompletion({ id, model, text }));
+  const result = await collectChatCompletion({ ...body, model }, apiKey, { requestId: id });
+  sendJson(res, 200, makeChatCompletion({
+    id,
+    model,
+    text: result.text,
+    toolCalls: result.toolCalls,
+    finishReason: finishReasonFor(result.toolCalls),
+  }));
 }
 
 async function handleAuthCode(req, res) {
