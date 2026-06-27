@@ -11,6 +11,7 @@ const {
 } = require('./src/kombaiClient');
 const { AccountPool, isRetryableAccountError } = require('./src/accountPool');
 const { makeChatChunk, makeChatCompletion, randomId } = require('./src/openaiCompat');
+const { autoRegisterAccount } = require('./src/autoRegister');
 
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
@@ -369,6 +370,30 @@ function adminHtml() {
     </section>
 
     <section>
+      <h2>自动注册</h2>
+      <p class="muted">使用临时邮箱自动注册 Kombai 账号并获取 API key。需要 Playwright 浏览器支持。</p>
+      <div class="grid">
+        <div class="col-3">
+          <label>邮箱前缀</label>
+          <input id="autoEmailPrefix" placeholder="kombai" value="kombai">
+        </div>
+        <div class="col-3">
+          <label>Turnstile Token（可选）</label>
+          <input id="autoTurnstileToken" placeholder="留空则不使用">
+        </div>
+        <div class="col-3">
+          <label>注册数量</label>
+          <input id="autoFillCount" type="number" min="1" max="20" placeholder="默认填充到目标数">
+        </div>
+        <div class="col-3 row" style="align-items:end">
+          <button onclick="autoRegisterOne()">注册一个</button>
+          <button class="secondary" onclick="autoFillPool()">填充号池</button>
+        </div>
+      </div>
+      <div id="autoRegStatus" style="margin-top:12px"></div>
+    </section>
+
+    <section>
       <h2>账号</h2>
       <div id="accounts"></div>
     </section>
@@ -508,6 +533,66 @@ function adminHtml() {
       await loadState();
     }
 
+    function setAutoRegStatus(text, cls) {
+      const el = document.getElementById('autoRegStatus');
+      el.innerHTML = '<span class="' + (cls || 'muted') + '">' + esc(text) + '</span>';
+    }
+
+    async function autoRegisterOne() {
+      const btn = event.target;
+      btn.disabled = true;
+      setAutoRegStatus('正在自动注册，请稍候（约1-2分钟）...', 'muted');
+      try {
+        const data = await api('/admin/api/auto-register', {
+          method: 'POST',
+          body: JSON.stringify({
+            emailPrefix: document.getElementById('autoEmailPrefix').value || 'kombai',
+            turnstileToken: document.getElementById('autoTurnstileToken').value || undefined,
+          }),
+        });
+        if (data.success) {
+          setAutoRegStatus('注册成功！邮箱: ' + esc(data.email) + '，已自动添加到号池。', 'ok');
+        } else {
+          setAutoRegStatus('注册失败: ' + esc(data.error || '未知错误'), 'error');
+        }
+        await loadState();
+      } catch (error) {
+        setAutoRegStatus('注册失败: ' + esc(error.message), 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function autoFillPool() {
+      const btn = event.target;
+      const countVal = document.getElementById('autoFillCount').value;
+      const count = countVal ? Number(countVal) : undefined;
+      btn.disabled = true;
+      setAutoRegStatus('正在自动填充号池，请稍候...', 'muted');
+      try {
+        const data = await api('/admin/api/auto-fill', {
+          method: 'POST',
+          body: JSON.stringify({
+            count,
+            emailPrefix: document.getElementById('autoEmailPrefix').value || 'kombai',
+            turnstileToken: document.getElementById('autoTurnstileToken').value || undefined,
+          }),
+        });
+        if (data.results) {
+          const ok = data.results.filter(function(r) { return r.success; }).length;
+          const fail = data.results.filter(function(r) { return !r.success; }).length;
+          setAutoRegStatus('填充完成：成功 ' + ok + ' 个，失败 ' + fail + ' 个。', ok > 0 ? 'ok' : 'warn');
+        } else {
+          setAutoRegStatus('填充完成: ' + esc(JSON.stringify(data)), 'ok');
+        }
+        await loadState();
+      } catch (error) {
+        setAutoRegStatus('填充失败: ' + esc(error.message), 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     loadState();
   </script>
 </body>
@@ -584,6 +669,67 @@ async function handleAdminApi(req, res, url) {
     }
     const account = accountPool.addAccount({ apiKey, label: body.label || 'auth account' });
     sendJson(res, 200, { ok: true, account });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/admin/api/auto-register') {
+    try {
+      const result = await autoRegisterAccount({
+        emailPrefix: body.emailPrefix || 'kombai',
+        turnstileToken: body.turnstileToken,
+        inviteToken: body.inviteToken,
+        authUrl: body.authUrl,
+        pollTimeoutMs: body.pollTimeoutMs || 120000,
+      });
+      if (result.success && result.apiKey) {
+        const account = accountPool.addAccount({
+          apiKey: result.apiKey,
+          label: `auto: ${result.email}`,
+          source: 'auto-register',
+        });
+        sendJson(res, 200, { ...result, account });
+      } else {
+        sendJson(res, 200, result);
+      }
+    } catch (error) {
+      sendJson(res, 500, { success: false, error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/admin/api/auto-fill') {
+    const state = accountPool.getState();
+    const missing = state.pool.missingAccounts;
+    const count = Math.min(Number(body.count) || missing, 20);
+    if (count <= 0) {
+      sendJson(res, 200, { success: true, message: '号池已满，无需填充', results: [] });
+      return;
+    }
+    const results = [];
+    for (let i = 0; i < count; i++) {
+      try {
+        const result = await autoRegisterAccount({
+          emailPrefix: body.emailPrefix || 'kombai',
+          turnstileToken: body.turnstileToken,
+          inviteToken: body.inviteToken,
+          authUrl: body.authUrl,
+          pollTimeoutMs: body.pollTimeoutMs || 120000,
+        });
+        if (result.success && result.apiKey) {
+          const account = accountPool.addAccount({
+            apiKey: result.apiKey,
+            label: `auto: ${result.email}`,
+            source: 'auto-register',
+          });
+          results.push({ index: i, success: true, email: result.email, account });
+        } else {
+          results.push({ index: i, success: false, error: '注册流程未完成' });
+        }
+      } catch (error) {
+        results.push({ index: i, success: false, error: error.message });
+      }
+    }
+    sendJson(res, 200, { success: true, count: results.length, results });
     return;
   }
 
