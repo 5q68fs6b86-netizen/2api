@@ -1,0 +1,479 @@
+{
+  "name": "kombai",
+  "publisher": "kombai",
+  "displayName": "Kombai - Your AI design engineer",
+  "description": "Ship standout websites and product frontends. Bring design craft and production code together. Works with VS Code, Cursor, Devin Desktop, Claude code, Codex etc.",
+  "main": "./extension.js",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "vscode": "^1.84.1"
+  },
+  "icon": "assets/kombai.png",
+  "galleryBanner": {
+    "color": "#1B2328",
+    "theme": "dark"
+  },
+  "categories": [
+    "AI, Chat, Programming Languages, Machine Learning, Snippets, Education"
+  ],
+  "keywords": [
+    "Figma MCP",
+    "Figma to code",
+    "Figma to react",
+    "Trae",
+    "Devin",
+    "Codeium",
+    "Qodo",
+    "Augment Code",
+    "KiloCode",
+    "RooCode",
+    "Amazon Q",
+    "Claude Code",
+    "Codex"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguage:typescript"
+  ],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "kombai.canvasEditor",
+        "displayName": "Kombai Canvas",
+        "selector": [
+          {
+            "filenamePattern": "*.canvas",
+            "scheme": "file"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "kombai",
+          "title": "Kombai",
+          "icon": "assets/kombai-activity-bar-logo.svg"
+        }
+      ]
+    },
+    "views": {
+      "kombai": [
+        {
+          "id": "kombai.sidebarGUI",
+          "name": "Kombai",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "kombai.openSettings",
+        "title": "Open Settings",
+        "icon": "$(gear)",
+        "category": "Kombai",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.canvasEditor.viewSource",
+        "category": "Kombai",
+        "title": "View Canvas Source",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "kombai.canvasEditor.openCanvas",
+        "category": "Kombai",
+        "title": "Open Canvas in Browser",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "kombai.openDesignMode",
+        "category": "Kombai",
+        "title": "Open Design Mode",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.startDesignServer",
+        "category": "Kombai",
+        "title": "Start Design Server",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.restartDesignServer",
+        "category": "Kombai",
+        "title": "Restart Design Server",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.focusKombaiInput",
+        "category": "Kombai",
+        "title": "Add Selection to Chat",
+        "icon": "$(fullscreen)",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.contributeToChat",
+        "category": "Kombai",
+        "title": "Contribute to Chat",
+        "icon": "$(fullscreen)",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.toggleInlineTip",
+        "category": "Kombai",
+        "title": "Toggle Inline Tip",
+        "icon": "$(info)",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.viewHistory",
+        "category": "Kombai",
+        "title": "View History",
+        "icon": "$(history)",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.expandInEditor",
+        "category": "Kombai",
+        "title": "Open in Editor",
+        "icon": "$(editor-layout)",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.creditsAndBilling",
+        "category": "Kombai",
+        "title": "Subscription and Billing",
+        "icon": "$(account)",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.toggleHelpCard",
+        "category": "Kombai",
+        "title": "Open Help Section",
+        "icon": "$(kebab-vertical)",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.newThread",
+        "category": "Kombai",
+        "title": "New Chat",
+        "icon": "$(plus)",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.acceptDiff",
+        "category": "Kombai",
+        "title": "Accept Diff",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.rejectDiff",
+        "category": "Kombai",
+        "title": "Reject Diff",
+        "group": "Kombai",
+        "icon": "$(stop)"
+      },
+      {
+        "command": "kombai.logout",
+        "category": "Kombai",
+        "title": "Logout",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.openWalkthrough",
+        "category": "Kombai",
+        "title": "Open Walkthrough",
+        "group": "Kombai",
+        "icon": "$(walkthrough)"
+      },
+      {
+        "command": "kombai.openBrowserLogs",
+        "category": "Kombai",
+        "title": "Open Browser Log File",
+        "group": "Kombai",
+        "icon": "$(file-text)"
+      },
+      {
+        "command": "kombai.addTerminalOutputToChat",
+        "category": "Kombai",
+        "title": "Add to Kombai",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.openFromEditorTitle",
+        "category": "Kombai",
+        "title": "Open Kombai",
+        "icon": {
+          "light": "assets/kombai-icon.svg",
+          "dark": "assets/kombai-icon.svg"
+        },
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.editor.viewHistory",
+        "category": "Kombai",
+        "title": "View History",
+        "icon": "$(history)",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.editor.creditsAndBilling",
+        "category": "Kombai",
+        "title": "Subscription and Billing",
+        "icon": "$(account)",
+        "group": "Kombai"
+      },
+      {
+        "command": "kombai.editor.toggleHelpCard",
+        "category": "Kombai",
+        "title": "Open Help Section",
+        "icon": "$(kebab-vertical)",
+        "group": "Kombai"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "kombai.focusKombaiInput",
+        "mac": "cmd+l",
+        "key": "ctrl+l"
+      },
+      {
+        "command": "kombai.newThread",
+        "mac": "cmd+alt+n",
+        "key": "ctrl+alt+n"
+      },
+      {
+        "command": "kombai.saveImage",
+        "mac": "cmd+s",
+        "key": "ctrl+s",
+        "when": "kombai.imagePanel"
+      },
+      {
+        "key": "cmd+s",
+        "command": "kombai.saveVirtualTextFile",
+        "when": "kombai.isKombaiUnsavedTextFile"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "kombai.editorContextSubmenu",
+        "label": "Kombai"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "kombai.canvasEditor.viewSource",
+          "group": "navigation@-1",
+          "when": "activeWebviewPanelId == 'kombai.canvasEditor'"
+        },
+        {
+          "command": "kombai.canvasEditor.openCanvas",
+          "group": "navigation@-1",
+          "when": "resourceExtname == .canvas && activeWebviewPanelId != 'kombai.canvasEditor'"
+        },
+        {
+          "command": "kombai.openFromEditorTitle",
+          "group": "navigation@0",
+          "when": "kombai.loggedIn && activeWebviewPanelId != 'kombai.editorGUI'"
+        },
+        {
+          "command": "kombai.editor.creditsAndBilling",
+          "group": "navigation@2",
+          "when": "activeWebviewPanelId == 'kombai.editorGUI' && kombai.loggedIn && !kombai.scanningSettings"
+        },
+        {
+          "command": "kombai.editor.toggleHelpCard",
+          "group": "navigation@3",
+          "when": "activeWebviewPanelId == 'kombai.editorGUI' && kombai.loggedIn"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "kombai.openSettings",
+          "when": "kombai.loggedIn && workspaceFolderCount != 0"
+        },
+        {
+          "command": "kombai.logout",
+          "when": "kombai.loggedIn"
+        },
+        {
+          "command": "kombai.focusKombaiInput",
+          "when": "view == kombai.sidebarGUI"
+        },
+        {
+          "command": "kombai.acceptDiff",
+          "when": "kombai.diffVisible"
+        },
+        {
+          "command": "kombai.rejectDiff",
+          "when": "kombai.diffVisible"
+        },
+        {
+          "command": "kombai.toggleHelpCard",
+          "when": "kombai.loggedIn"
+        },
+        {
+          "command": "kombai.newThread",
+          "when": "kombai.loggedIn"
+        },
+        {
+          "command": "kombai.startDesignServer"
+        },
+        {
+          "command": "kombai.restartDesignServer"
+        },
+        {
+          "command": "kombai.editor.viewHistory",
+          "when": "false"
+        },
+        {
+          "command": "kombai.editor.creditsAndBilling",
+          "when": "false"
+        },
+        {
+          "command": "kombai.editor.toggleHelpCard",
+          "when": "false"
+        },
+        {
+          "command": "kombai.canvasEditor.viewSource",
+          "when": "activeWebviewPanelId == 'kombai.canvasEditor'"
+        },
+        {
+          "command": "kombai.canvasEditor.openCanvas",
+          "when": "resourceExtname == .canvas"
+        }
+      ],
+      "editor/context": [
+        {
+          "submenu": "kombai.editorContextSubmenu",
+          "when": "editorTextFocus && kombai.loggedIn",
+          "group": "navigation"
+        }
+      ],
+      "terminal/context": [
+        {
+          "command": "kombai.addTerminalOutputToChat",
+          "when": "kombai.loggedIn",
+          "group": "navigation"
+        }
+      ],
+      "kombai.editorContextSubmenu": [
+        {
+          "command": "kombai.focusKombaiInput",
+          "when": "editorTextFocus && editorHasSelection && kombai.loggedIn",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "kombai.expandInEditor",
+          "when": "view == kombai.sidebarGUI && kombai.loggedIn && !kombai.disableSidePanelTitleBar && !kombai.scanningSettings",
+          "group": "navigation@1"
+        },
+        {
+          "command": "kombai.openSettings",
+          "when": "view == kombai.sidebarGUI && kombai.loggedIn && !kombai.disableSidePanelTitleBar && !kombai.scanningSettings",
+          "group": "navigation@2"
+        },
+        {
+          "command": "kombai.creditsAndBilling",
+          "when": "view == kombai.sidebarGUI && kombai.loggedIn && !kombai.disableSidePanelTitleBar && !kombai.scanningSettings",
+          "group": "navigation@3"
+        },
+        {
+          "command": "kombai.toggleHelpCard",
+          "when": "view == kombai.sidebarGUI && kombai.loggedIn && !kombai.disableSidePanelTitleBar",
+          "group": "navigation@5"
+        }
+      ]
+    },
+    "languages": [
+      {
+        "id": "jsonc",
+        "filenamePatterns": [
+          "**/.kombai/stack.json"
+        ]
+      },
+      {
+        "id": "jsonc",
+        "filenamePatterns": [
+          "**/.kombai/mcp.json"
+        ]
+      },
+      {
+        "id": "jsonc",
+        "extensions": [
+          ".canvas"
+        ]
+      }
+    ],
+    "jsonValidation": [
+      {
+        "fileMatch": "**/.kombai/stack.json",
+        "url": "./stack.schema.json"
+      },
+      {
+        "fileMatch": "**/.kombai/mcp.json",
+        "url": "./mcp.schema.json"
+      }
+    ],
+    "configuration": [
+      {
+        "title": "Kombai",
+        "properties": {
+          "kombai.showInlineTip": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show inline suggestion to use the Kombai keyboard shortcuts (e.g. \"Cmd/Ctrl L to select code and add to the chat\")."
+          }
+        }
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "kombai.walkthrough",
+        "title": "👋 Meet Kombai: Your AI agent for building amazing frontends",
+        "description": "Kombai is an all-in-one agent that lets you build standout designs, generate production-grade code, and visually edit your frontend - all within your IDE.",
+        "steps": [
+          {
+            "id": "kombai.walkthrough.step1",
+            "title": "Build standout UI designs",
+            "media": {
+              "markdown": "walkthrough/step1.md"
+            }
+          },
+          {
+            "id": "kombai.walkthrough.step2",
+            "title": "Generate production-grade code",
+            "media": {
+              "markdown": "walkthrough/step2.md"
+            }
+          },
+          {
+            "id": "kombai.walkthrough.step3",
+            "title": "Visually edit frontend & automate testing",
+            "media": {
+              "markdown": "walkthrough/step3.md"
+            }
+          },
+          {
+            "id": "kombai.walkthrough.step4",
+            "title": "Close the loop inside your IDE",
+            "media": {
+              "markdown": "walkthrough/step4.md"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:uninstall": "node ./uninstall.js"
+  },
+  "extensionDependencies": [
+    "vscode.git"
+  ],
+  "version": "2.0.35"
+}

@@ -1,0 +1,22 @@
+Copyright (c) 2025 Kombai. All rights reserved.
+
+This software is the proprietary property of Kombai and is licensed, not sold. By installing or using this extension, you agree to the following terms:
+
+1. **License Grant**: Kombai grants you a limited, non-exclusive, non-transferable, and revocable license to use this extension solely for personal or internal business purposes.
+
+2. **Restrictions**:
+
+   - You may not copy, modify, distribute, sell, sublicense, reverse engineer, decompile, or disassemble any part of this extension.
+   - You may not use the extension to develop or distribute competing products.
+
+3. **Ownership**: All intellectual property rights in and to this software are and shall remain the sole property of Kombai.
+
+4. **Disclaimer of Warranties**:
+   This software is provided "as is", without warranty of any kind, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, or non-infringement.
+
+5. **Limitation of Liability**:
+   In no event shall Kombai be liable for any direct, indirect, incidental, special, or consequential damages arising out of the use or inability to use this software.
+
+6. **Termination**: This license terminates automatically if you violate any of the terms. Upon termination, you must stop using and destroy all copies of the software.
+
+For any questions regarding licensing, please contact: support@kombai.com

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+	<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
+		<Metadata>
+			<Identity Language="en-US" Id="kombai" Version="2.0.35" Publisher="kombai" />
+			<DisplayName>Kombai - Your AI design engineer</DisplayName>
+			<Description xml:space="preserve">Ship standout websites and product frontends. Bring design craft and production code together. Works with VS Code, Cursor, Devin Desktop, Claude code, Codex etc.</Description>
+			<Tags>Figma MCP,Figma to code,Figma to react,Trae,Devin,Codeium,Qodo,Augment Code,KiloCode,RooCode,Amazon Q,Claude Code,Codex,keybindings,json,jsonc,__ext_canvas,typescript</Tags>
+			<Categories>AI, Chat, Programming Languages, Machine Learning, Snippets, Education</Categories>
+			<GalleryFlags>Public</GalleryFlags>
+			
+			<Properties>
+				<Property Id="Microsoft.VisualStudio.Code.Engine" Value="^1.84.1" />
+				<Property Id="Microsoft.VisualStudio.Code.ExtensionDependencies" Value="vscode.git" />
+				<Property Id="Microsoft.VisualStudio.Code.ExtensionPack" Value="" />
+				<Property Id="Microsoft.VisualStudio.Code.ExtensionKind" Value="workspace" />
+				<Property Id="Microsoft.VisualStudio.Code.LocalizedLanguages" Value="" />
+				<Property Id="Microsoft.VisualStudio.Code.EnabledApiProposals" Value="" />
+				
+				<Property Id="Microsoft.VisualStudio.Code.ExecutesCode" Value="true" />
+				
+				
+				
+				
+				<Property Id="Microsoft.VisualStudio.Services.Branding.Color" Value="#1B2328" />
+				<Property Id="Microsoft.VisualStudio.Services.Branding.Theme" Value="dark" />
+				<Property Id="Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown" Value="true" />
+				<Property Id="Microsoft.VisualStudio.Services.Content.Pricing" Value="Free"/>
+
+				
+				
+			</Properties>
+			<License>extension/LICENSE.txt</License>
+			<Icon>extension/assets/kombai.png</Icon>
+		</Metadata>
+		<Installation>
+			<InstallationTarget Id="Microsoft.VisualStudio.Code"/>
+		</Installation>
+		<Dependencies/>
+		<Assets>
+			<Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true" />
+			<Asset Type="Microsoft.VisualStudio.Services.Content.Details" Path="extension/readme.md" Addressable="true" />
+<Asset Type="Microsoft.VisualStudio.Services.Content.Changelog" Path="extension/changelog.md" Addressable="true" />
+<Asset Type="Microsoft.VisualStudio.Services.Content.License" Path="extension/LICENSE.txt" Addressable="true" />
+<Asset Type="Microsoft.VisualStudio.Services.Icons.Default" Path="extension/assets/kombai.png" Addressable="true" />
+		</Assets>
+	</PackageManifest>

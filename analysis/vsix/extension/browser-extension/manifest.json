@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Kombai",
+  "version": "1.0.0",
+  "description": "Kombai browser extension",
+  "permissions": ["activeTab", "tabs", "scripting", "sidePanel", "storage", "clipboardWrite", "clipboardRead"],
+  "host_permissions": ["<all_urls>"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://localhost:* http://localhost:* https://*.posthog.com https://*.sentry.io"
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Toggle Kombai Sidebar",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidebar.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["content-script.js"],
+    "run_at": "document_start"
+  }],
+  "web_accessible_resources": [{
+    "resources": ["page-api.js"],
+    "matches": ["<all_urls>"]
+  }]
+}

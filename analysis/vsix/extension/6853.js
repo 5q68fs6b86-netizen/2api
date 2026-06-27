@@ -1,0 +1,4 @@
+"use strict";
+!function(){try{var e="undefined"!=typeof window?window:"undefined"!=typeof global?global:"undefined"!=typeof globalThis?globalThis:"undefined"!=typeof self?self:{},n=(new e.Error).stack;n&&(e._sentryDebugIds=e._sentryDebugIds||{},e._sentryDebugIds[n]="1c87daab-4967-513f-9139-629e24ef972e")}catch(e){}}();
+(self.webpackChunk_kombai_ui=self.webpackChunk_kombai_ui||[]).push([[6853],{26853(e,t,i){i.r(t),i.d(t,{default:()=>a});var a=async(e=[{}])=>(Array.isArray(e)||(e=[e]),new Promise((t,i)=>{const a=document.createElement("input");a.type="file";const n=[...e.map(e=>e.mimeTypes||[]),...e.map(e=>e.extensions||[])].join();a.multiple=e[0].multiple||!1,a.accept=n||"";const c=e=>{"function"==typeof s&&s(),t(e)},s=e[0].legacySetup&&e[0].legacySetup(c,()=>s(i),a);a.addEventListener("change",()=>{c(a.multiple?Array.from(a.files):a.files[0])}),a.click()}))}}]);
+//# debugId=1c87daab-4967-513f-9139-629e24ef972e

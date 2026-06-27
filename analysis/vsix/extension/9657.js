@@ -1,0 +1,4 @@
+"use strict";
+!function(){try{var e="undefined"!=typeof window?window:"undefined"!=typeof global?global:"undefined"!=typeof globalThis?globalThis:"undefined"!=typeof self?self:{},n=(new e.Error).stack;n&&(e._sentryDebugIds=e._sentryDebugIds||{},e._sentryDebugIds[n]="80697ecd-f8af-54a4-b772-3c60f3ca0973")}catch(e){}}();
+(self.webpackChunk_kombai_ui=self.webpackChunk_kombai_ui||[]).push([[9657],{59657(e,s,a){a.r(s),a.d(s,{WorkerUrl:()=>r});var o=a(46339),r=(a(56080),a(1635),new URL("file:///home/runner/work/vscode-assistant/vscode-assistant/node_modules/@excalidraw/excalidraw/dist/prod/subset-worker.chunk.js"));typeof window>"u"&&typeof self<"u"&&(self.onmessage=async e=>{if(e.data.command===o.a.Subset){let s=await(0,o.c)(e.data.arrayBuffer,e.data.codePoints);self.postMessage(s,{transfer:[s]})}})}}]);
+//# debugId=80697ecd-f8af-54a4-b772-3c60f3ca0973

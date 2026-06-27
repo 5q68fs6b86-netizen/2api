@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "component_indexes": {
+      "type": "array",
+      "description": "Shared component index metadata for team collaboration",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["type", "path", "name"],
+            "properties": {
+              "type": { "type": "string", "const": "local" },
+              "path": { "type": "string" },
+              "name": { "type": "string" },
+              "excludedFolders": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": { "type": "string", "const": "external" },
+              "gitUrl": { "type": "string" },
+              "gitBranch": { "type": "string" },
+              "externalFolderPath": { "type": "string" },
+              "selectedPackages": { "type": "array", "items": { "type": "string" } },
+              "totalPackages": { "type": "number" },
+              "isMonorepo": { "type": "boolean" }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "additionalProperties": {
+    "oneOf": [
+      { "type": "string" },
+      { "type": "array", "items": { "type": "string" } }
+    ]
+  }
+}

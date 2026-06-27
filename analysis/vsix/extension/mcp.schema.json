@@ -1,0 +1,133 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Schema for .kombai/mcp.json – MCP server configuration",
+  "type": "object",
+  "if": {
+    "required": [
+      "mcpServers"
+    ]
+  },
+  "then": {
+    "properties": {
+      "mcpServers": {
+        "$ref": "#/definitions/flatFormat"
+      }
+    },
+    "additionalProperties": false
+  },
+  "else": {
+    "$ref": "#/definitions/flatFormat"
+  },
+  "definitions": {
+    "flatFormat": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/mcpConfig"
+      }
+    },
+    "mcpConfig": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/stdioConfig"
+        },
+        {
+          "$ref": "#/definitions/remoteConfig"
+        }
+      ]
+    },
+    "stdioConfig": {
+      "type": "object",
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Optional transport type hint. Accepted for compatibility but ignored — detection is based on the presence of the 'command' property."
+        },
+        "command": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          ]
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "type": "number",
+          "description": "Timeout in ms for MCP server requests"
+        }
+      },
+      "additionalProperties": false
+    },
+    "remoteConfig": {
+      "type": "object",
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Optional transport type hint. Known values: 'streamable-http', 'sse'. Any other value or omission triggers auto-negotiation (Streamable HTTP first, SSE fallback)."
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "auth": {
+          "$ref": "#/definitions/oauthConfig"
+        },
+        "timeout": {
+          "type": "number",
+          "description": "Timeout in ms for MCP server requests"
+        }
+      },
+      "additionalProperties": false
+    },
+    "oauthConfig": {
+      "type": "object",
+      "properties": {
+        "CLIENT_ID": {
+          "type": "string"
+        },
+        "CLIENT_SECRET": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
