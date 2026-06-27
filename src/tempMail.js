@@ -46,19 +46,36 @@ async function getMailDetail(mailId, jwt, options = {}) {
 }
 
 function extractVerificationLink(html = '') {
+  const normalized = normalizeEmailContent(html);
   const patterns = [
     /href="(https?:\/\/[^"]*confirm_email[^"]*)"/i,
     /href="(https?:\/\/[^"]*verify[^"]*)"/i,
     /href="(https?:\/\/[^"]*confirm[^"]*)"/i,
     /href="(https?:\/\/[^"]*activate[^"]*)"/i,
+    /\b(https?:\/\/\S*confirm_email\S*)/i,
+    /\b(https?:\/\/\S*verify\S*)/i,
+    /\b(https?:\/\/\S*confirm\S*)/i,
+    /\b(https?:\/\/\S*activate\S*)/i,
   ];
 
   for (const pattern of patterns) {
-    const match = html.match(pattern);
-    if (match) return match[1].replace(/&amp;/g, '&').replace(/=\r?\n/g, '').replace(/=3D/g, '=');
+    const match = normalized.match(pattern);
+    if (match) return cleanVerificationLink(match[1]);
   }
 
   return null;
+}
+
+function normalizeEmailContent(content = '') {
+  return String(content)
+    .replace(/=\r?\n/g, '')
+    .replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+function cleanVerificationLink(link) {
+  return String(link)
+    .replace(/&amp;/g, '&')
+    .replace(/[)"'<>\]]+$/g, '');
 }
 
 async function waitForVerificationEmail(address, jwt, options = {}) {
@@ -69,8 +86,10 @@ async function waitForVerificationEmail(address, jwt, options = {}) {
   while (Date.now() - startedAt < timeoutMs) {
     const mails = await getMails(address, options);
     for (const mail of mails) {
-      const detail = await getMailDetail(mail.id, jwt, options);
-      const link = extractVerificationLink(detail.html || detail.text || '');
+      const detail = await getMailDetail(mail.id, jwt, options).catch(() => ({}));
+      const link = extractVerificationLink(
+        detail.html || detail.text || detail.raw || mail.html || mail.text || mail.raw || '',
+      );
       if (link) return { mail, detail, link };
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
@@ -84,5 +103,6 @@ module.exports = {
   createTempEmail,
   getMailDetail,
   getMails,
+  extractVerificationLink,
   waitForVerificationEmail,
 };

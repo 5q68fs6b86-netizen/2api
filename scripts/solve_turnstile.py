@@ -40,6 +40,16 @@ def extract_turnstile_token(sb, timeout=30):
     """从页面中提取 Turnstile token"""
     deadline = time.time() + timeout
     while time.time() < deadline:
+        # 方法0: 手动 render 回调保存的 token
+        try:
+            val = sb.execute_script(
+                'return window.__turnstile_token || "";'
+            )
+            if val and len(val) > 20:
+                return val
+        except Exception:
+            pass
+
         # 方法1: 标准 cf-turnstile-response input
         try:
             val = sb.execute_script(
@@ -55,6 +65,9 @@ def extract_turnstile_token(sb, timeout=30):
         try:
             val = sb.execute_script(
                 'if (typeof turnstile !== "undefined") {'
+                '  if (window.__turnstile_widget_id) {'
+                '    try { var rr = turnstile.getResponse(window.__turnstile_widget_id); if (rr && rr.length > 20) return rr; } catch(e) {}'
+                '  }'
                 '  var widgets = document.querySelectorAll("[data-turnstile-widget-id]");'
                 '  for (var i = 0; i < widgets.length; i++) {'
                 '    var wid = widgets[i].getAttribute("data-turnstile-widget-id");'
@@ -132,14 +145,22 @@ def ensure_turnstile_rendered(sb):
         f'    else document.body.appendChild(container);'
         f'  }}'
         f'  try {{'
-        f'    turnstile.render(container, {{'
+        f'    var widgetId = turnstile.render(container, {{'
         f'      sitekey: "{sitekey}",'
         f'      callback: function(token) {{'
         f'        var el = document.querySelector("input[name=cf-turnstile-response]");'
+        f'        if (!el) {{'
+        f'          el = document.createElement("input");'
+        f'          el.type = "hidden";'
+        f'          el.name = "cf-turnstile-response";'
+        f'          document.body.appendChild(el);'
+        f'        }}'
         f'        if (el) el.value = token;'
         f'        window.__turnstile_token = token;'
         f'      }}'
         f'    }});'
+        f'    window.__turnstile_widget_id = widgetId;'
+        f'    container.setAttribute("data-turnstile-widget-id", widgetId);'
         f'    return true;'
         f'  }} catch(e) {{ return "error:" + e.message; }}'
         f'}}'
