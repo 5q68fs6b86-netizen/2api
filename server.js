@@ -12,6 +12,7 @@ const {
 const { AccountPool, isRetryableAccountError } = require('./src/accountPool');
 const { makeChatChunk, makeChatCompletion, randomId } = require('./src/openaiCompat');
 const { autoRegisterAccount, checkBrowserRuntime } = require('./src/autoRegister');
+const { DEFAULT_KOMBAI_AUTH_URL } = require('./src/kombaiAuth');
 
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
@@ -156,9 +157,11 @@ async function buildAutoRegisterDiagnostics() {
     },
     config: {
       autoEmailPrefix: firstNonEmpty(process.env.AUTO_EMAIL_PREFIX, 'kombai'),
+      authUrl: firstNonEmpty(process.env.KOMBAI_AUTH_URL, DEFAULT_KOMBAI_AUTH_URL),
       turnstileTokenConfigured: envConfigured('TURNSTILE_TOKEN'),
       inviteTokenConfigured: envConfigured('KOMBAI_INVITE_TOKEN') || envConfigured('INVITE_TOKEN'),
       authUrlConfigured: envConfigured('KOMBAI_AUTH_URL'),
+      authConnectUrlConfigured: envConfigured('KOMBAI_AUTH_CONNECT_URL'),
       pollTimeoutMs: Number(firstNonEmpty(process.env.KOMBAI_AUTH_TIMEOUT_MS, 120000)) || 120000,
       tempMailApiConfigured: envConfigured('TEMP_MAIL_API'),
       tempMailAdminAuthConfigured: envConfigured('TEMP_MAIL_ADMIN_AUTH'),

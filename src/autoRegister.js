@@ -56,6 +56,28 @@ async function launchChromium() {
   return chromium.launch(browserLaunchOptions());
 }
 
+async function addCookiesForUrl(context, targetUrl, cookies = {}) {
+  const entries = Object.entries(cookies).filter(([, value]) => value);
+  if (entries.length === 0) return 0;
+
+  const parsed = new URL(targetUrl);
+  const origin = `${parsed.protocol}//${parsed.hostname}`;
+  let added = 0;
+  for (const [name, value] of entries) {
+    try {
+      await context.addCookies([{
+        name,
+        value: String(value),
+        url: origin,
+      }]);
+      added += 1;
+    } catch (error) {
+      console.log(`[auto-register] skip cookie ${name}: ${error.message}`);
+    }
+  }
+  return added;
+}
+
 async function checkBrowserRuntime() {
   const startedAt = Date.now();
   const browser = await launchChromium();
@@ -74,6 +96,58 @@ async function checkBrowserRuntime() {
   } finally {
     await browser.close();
   }
+}
+
+async function isLoginFormVisible(page) {
+  const selectors = [
+    'button:has-text("Log in with email")',
+    'button:has-text("Log In")',
+    'button:has-text("Login")',
+    'button:has-text("Sign in")',
+  ];
+  for (const sel of selectors) {
+    if (await page.locator(sel).first().isVisible({ timeout: 500 }).catch(() => false)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function switchToLoginPage(page) {
+  let url = page.url();
+  if (!url.includes('signup')) return url;
+
+  const allButtons = await page.locator('button:visible, a:visible').all();
+  for (const btn of allButtons) {
+    const text = await btn.textContent().catch(() => '');
+    if (text.trim()) console.log('[auto-register] visible element:', text.trim().substring(0, 80));
+  }
+
+  const switchSelectors = [
+    'a:has-text("Log in")',
+    'button:has-text("Log in")',
+    'text=Log in',
+    'text=Already have an account?',
+  ];
+  for (const sel of switchSelectors) {
+    try {
+      const el = page.locator(sel).first();
+      if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
+        console.log('[auto-register] clicking switch:', sel);
+        await el.click();
+        await page.waitForTimeout(3000);
+        url = page.url();
+        console.log('[auto-register] after switch url:', url);
+        if (url.includes('login') || await isLoginFormVisible(page)) return url;
+      }
+    } catch {}
+  }
+
+  const loginUrl = url.replace('/signup', '/login');
+  console.log('[auto-register] navigating to login:', loginUrl);
+  await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+  await page.waitForTimeout(3000);
+  return page.url();
 }
 
 function extractApiKeyToken(data) {
@@ -165,77 +239,55 @@ async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {})
 
     let url = page.url();
     console.log('[auto-register] browser_connect initial url:', url);
+    const injectedCookies = await addCookiesForUrl(context, url, cookies);
+    if (injectedCookies > 0) {
+      console.log(`[auto-register] injected ${injectedCookies} cookies for ${new URL(url).hostname}`);
+      await page.goto(connectUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(3000);
+      url = page.url();
+      console.log('[auto-register] browser_connect after cookie injection, url:', url);
+    }
 
     // 如果被重定向到登录/注册页面
     if (url.includes('login') || url.includes('signup')) {
       // 先检查是否在 signup 页面，需要切换到 login
       if (url.includes('signup')) {
-        // 列出所有可见按钮用于调试
-        const allButtons = await page.locator('button:visible, a:visible').all();
-        for (const btn of allButtons) {
-          const text = await btn.textContent().catch(() => '');
-          if (text.trim()) console.log('[auto-register] visible element:', text.trim().substring(0, 80));
-        }
-
-        // 尝试多种方式切换到登录
-        const switchSelectors = [
-          'text=Already have an account?',
-          'text=Log in',
-          'a[href*="login"]',
-          'button:has-text("Log in")',
-        ];
-        let switched = false;
-        for (const sel of switchSelectors) {
-          try {
-            const el = page.locator(sel).first();
-            if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
-              console.log('[auto-register] clicking switch:', sel);
-              await el.click();
-              await page.waitForTimeout(3000);
-              url = page.url();
-              console.log('[auto-register] after switch url:', url);
-              switched = true;
-              break;
-            }
-          } catch {}
-        }
-        if (!switched) {
-          // 直接导航到 login 页面
-          const loginUrl = url.replace('/signup', '/login');
-          console.log('[auto-register] navigating to login:', loginUrl);
-          await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-          await page.waitForTimeout(3000);
-          url = page.url();
-        }
+        url = await switchToLoginPage(page);
       }
 
-      // 在该域名下通过 API 登录
-      const currentUrl = new URL(page.url());
-      const authBaseUrl = `${currentUrl.protocol}//${currentUrl.hostname}`;
-      const apiLoginResult = await apiLoginOnDomain(authBaseUrl, credentials.email, credentials.password);
-      console.log('[auto-register] API login result:', JSON.stringify({ success: apiLoginResult.success, status: apiLoginResult.status }));
-
-      if (apiLoginResult.success && apiLoginResult.cookies) {
-        for (const [name, value] of Object.entries(apiLoginResult.cookies)) {
-          await context.addCookies([{
-            name,
-            value: String(value),
-            domain: currentUrl.hostname,
-            path: '/',
-          }]);
-        }
-        await page.goto(connectUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await page.waitForTimeout(5000);
-        url = page.url();
-        console.log('[auto-register] browser_connect after API login, url:', url);
-      }
-
-      // 如果仍然需要登录，用浏览器表单
-      if (url.includes('login') || url.includes('signup')) {
+      if (url.includes('login') || await isLoginFormVisible(page)) {
         await browserFormLogin(page, credentials);
         await page.waitForTimeout(5000);
         url = page.url();
         console.log('[auto-register] browser_connect after form login, url:', url);
+      }
+
+      if (url.includes('login') || url.includes('signup')) {
+        const currentUrl = new URL(url);
+        const authBaseUrl = `${currentUrl.protocol}//${currentUrl.hostname}`;
+        let apiLoginResult = await apiLoginOnDomain(authBaseUrl, credentials.email, credentials.password);
+        if (!apiLoginResult.success && credentials.authUrl && normalizeAuthUrl(credentials.authUrl) !== authBaseUrl) {
+          apiLoginResult = await apiLoginOnDomain(normalizeAuthUrl(credentials.authUrl), credentials.email, credentials.password);
+        }
+        console.log('[auto-register] API login result:', JSON.stringify({ success: apiLoginResult.success, status: apiLoginResult.status }));
+
+        if (apiLoginResult.success && apiLoginResult.cookies) {
+          await addCookiesForUrl(context, url, apiLoginResult.cookies);
+          await page.goto(connectUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await page.waitForTimeout(5000);
+          url = page.url();
+          console.log('[auto-register] browser_connect after API login, url:', url);
+        }
+      }
+
+      if (url.includes('login') || url.includes('signup')) {
+        if (url.includes('signup')) url = await switchToLoginPage(page);
+        if (url.includes('login') || await isLoginFormVisible(page)) {
+          await browserFormLogin(page, credentials);
+          await page.waitForTimeout(5000);
+        }
+        url = page.url();
+        console.log('[auto-register] browser_connect after final form login, url:', url);
       }
     }
 
@@ -419,14 +471,15 @@ function groupCookiesByDomain(cookies, url) {
  * 自动注册一个 Kombai 账号并获取 API key
  *
  * 完整管道：
- * 1. 创建临时邮箱
- * 2. 注册 Kombai 账号
- * 3. 等待验证邮件并提取验证链接
- * 4. 用浏览器访问验证链接完成邮箱确认
- * 5. 生成 vscode-connect 授权链接
- * 6. 用浏览器访问授权链接完成授权
- * 7. 轮询获取 apiKeyToken
- * 8. 验证 API key
+ * 1. 获取注册配置
+ * 2. 创建临时邮箱
+ * 3. 注册 Kombai 账号
+ * 4. 等待验证邮件并提取验证链接
+ * 5. 用浏览器访问验证链接完成邮箱确认
+ * 6. 生成 vscode-connect 授权链接
+ * 7. 用浏览器访问授权链接完成授权
+ * 8. 轮询获取 apiKeyToken
+ * 9. 验证 API key
  */
 async function autoRegisterAccount(options = {}) {
   const authUrl = normalizeAuthUrl(firstNonEmpty(options.authUrl, process.env.KOMBAI_AUTH_URL, DEFAULT_KOMBAI_AUTH_URL));
@@ -437,7 +490,26 @@ async function autoRegisterAccount(options = {}) {
   const tempMailOptions = options.tempMail || {};
   const onProgress = options.onProgress || (() => {});
 
-  // Step 1: 创建临时邮箱
+  // Step 1: 获取注册配置
+  onProgress({ step: 'signup_config', status: 'running' });
+  const jar = new CookieJar();
+  let pageConfig = null;
+  try {
+    const config = await getSignupConfig({ jar, authUrl });
+    pageConfig = config.pageConfig;
+    onProgress({ step: 'signup_config', status: 'done' });
+  } catch (error) {
+    onProgress({ step: 'signup_config', status: 'error', error: error.message });
+    throw new Error(`获取注册配置失败: ${error.message}`);
+  }
+
+  if (pageConfig && pageConfig.turnstile_site_key && !turnstileToken) {
+    const message = '注册页需要 Turnstile token；请在请求中传 turnstileToken，或设置 TURNSTILE_TOKEN 环境变量';
+    onProgress({ step: 'signup', status: 'error', error: message, siteKey: pageConfig.turnstile_site_key });
+    throw new Error(`注册失败: ${message}`);
+  }
+
+  // Step 2: 创建临时邮箱
   onProgress({ step: 'create_email', status: 'running' });
   const emailName = makeEmailName(emailPrefix);
   const password = makePassword(emailName.slice(-8));
@@ -451,19 +523,6 @@ async function autoRegisterAccount(options = {}) {
   }
 
   const email = tempEmail.address;
-
-  // Step 2: 获取注册配置
-  onProgress({ step: 'signup_config', status: 'running' });
-  const jar = new CookieJar();
-  let pageConfig = null;
-  try {
-    const config = await getSignupConfig({ jar, authUrl });
-    pageConfig = config.pageConfig;
-    onProgress({ step: 'signup_config', status: 'done' });
-  } catch (error) {
-    onProgress({ step: 'signup_config', status: 'error', error: error.message });
-    throw new Error(`获取注册配置失败: ${error.message}`);
-  }
 
   // Step 3: 注册
   onProgress({ step: 'signup', status: 'running' });

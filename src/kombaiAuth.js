@@ -3,9 +3,23 @@
 const { CookieJar, request } = require('./httpClient');
 const { DEFAULT_TEMP_MAIL_DOMAIN, createTempEmail, waitForVerificationEmail } = require('./tempMail');
 
-const DEFAULT_KOMBAI_AUTH_URL = process.env.KOMBAI_AUTH_URL || 'https://auth.kombai.com';
+const DEFAULT_KOMBAI_AUTH_CONNECT_URL = 'https://agent.kombai.com/vscode-connect';
+const DEFAULT_AGENT_AUTH_URL = 'https://auth.agent.kombai.com';
+const DEFAULT_KOMBAI_AUTH_URL = process.env.KOMBAI_AUTH_URL ||
+  inferAuthUrlFromConnectUrl(process.env.KOMBAI_AUTH_CONNECT_URL || DEFAULT_KOMBAI_AUTH_CONNECT_URL);
 const DEFAULT_USER_AGENT = process.env.USER_AGENT ||
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
+function inferAuthUrlFromConnectUrl(connectUrl) {
+  try {
+    const parsed = new URL(connectUrl);
+    if (parsed.hostname.startsWith('auth.')) return `${parsed.protocol}//${parsed.hostname}`;
+    if (parsed.hostname.startsWith('agent.')) return `${parsed.protocol}//auth.${parsed.hostname}`;
+  } catch (_) {
+    // fallback below
+  }
+  return DEFAULT_AGENT_AUTH_URL;
+}
 
 function makePassword(seed = Math.random().toString(36).slice(2, 10)) {
   return `K0mb@i_${seed}A1!`;
