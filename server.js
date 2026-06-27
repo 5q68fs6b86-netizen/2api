@@ -1,7 +1,8 @@
 'use strict';
 
 const http = require('http');
-const { getSignupConfig, login, registerAccount } = require('./src/kombaiAuth');
+const { completeChat, exchangeAuthCode, streamChatCompletion } = require('./src/kombaiClient');
+const { makeChatChunk, makeChatCompletion, randomId } = require('./src/openaiCompat');
 
 const PORT = Number(process.env.PORT || 3000);
 
@@ -14,11 +15,80 @@ function sendJson(res, status, payload) {
   res.end(body);
 }
 
+function sendError(res, status, message, type = 'invalid_request_error') {
+  sendJson(res, status, {
+    error: {
+      message,
+      type,
+      code: status,
+    },
+  });
+}
+
 async function readJson(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const text = Buffer.concat(chunks).toString('utf8');
   return text ? JSON.parse(text) : {};
+}
+
+function getBearerToken(req) {
+  const auth = req.headers.authorization || '';
+  if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
+  if (req.headers['x-api-key']) return String(req.headers['x-api-key']).trim();
+  return process.env.KOMBAI_API_KEY || '';
+}
+
+function writeSse(res, payload) {
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+async function handleChatCompletions(req, res) {
+  const apiKey = getBearerToken(req);
+  if (!apiKey) {
+    sendError(res, 401, '缺少 Kombai API key。请设置 KOMBAI_API_KEY，或用 Authorization: Bearer <apiKeyToken> 传入。', 'authentication_error');
+    return;
+  }
+
+  const body = await readJson(req);
+  const model = body.model || process.env.OPENAI_MODEL_NAME || 'kombai-chat';
+  const id = randomId('chatcmpl');
+
+  if (body.stream) {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    writeSse(res, makeChatChunk({ id, model, delta: { role: 'assistant' } }));
+    for await (const event of streamChatCompletion({ ...body, model }, apiKey, { requestId: id })) {
+      if (event.type === 'text' && event.text) {
+        writeSse(res, makeChatChunk({ id, model, delta: { content: event.text } }));
+      }
+    }
+    writeSse(res, makeChatChunk({ id, model, delta: {}, finishReason: 'stop' }));
+    res.write('data: [DONE]\n\n');
+    res.end();
+    return;
+  }
+
+  const text = await completeChat({ ...body, model }, apiKey, { requestId: id });
+  sendJson(res, 200, makeChatCompletion({ id, model, text }));
+}
+
+async function handleAuthCode(req, res) {
+  const body = await readJson(req);
+  const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+  const code = body.code || url.searchParams.get('code');
+  if (!code) {
+    sendError(res, 400, 'code 必填');
+    return;
+  }
+
+  const result = await exchangeAuthCode(code);
+  sendJson(res, 200, result);
 }
 
 async function route(req, res) {
@@ -29,52 +99,41 @@ async function route(req, res) {
     return;
   }
 
-  if (req.method === 'GET' && url.pathname === '/config') {
-    const config = await getSignupConfig();
-    sendJson(res, 200, { pageConfig: config.pageConfig });
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/register') {
-    const body = await readJson(req);
-    const result = await registerAccount({
-      email: body.email,
-      emailName: body.emailName,
-      emailPrefix: body.emailPrefix,
-      password: body.password,
-      turnstileToken: body.turnstileToken,
-      inviteToken: body.inviteToken,
-      waitForVerification: body.waitForVerification === true,
-      login: body.login !== false,
-      tempMail: body.tempMail,
-    });
-    sendJson(res, result.success ? 200 : 400, result);
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/login') {
-    const body = await readJson(req);
-    if (!body.email || !body.password) {
-      sendJson(res, 400, { success: false, error: 'email 和 password 必填' });
-      return;
-    }
-    const result = await login(body.email, body.password);
-    sendJson(res, result.success ? 200 : 401, {
-      success: result.success,
-      status: result.status,
-      userId: result.userId,
-      error: result.error,
-      cookies: result.jar.toJSON(),
+  if (req.method === 'GET' && url.pathname === '/v1/models') {
+    sendJson(res, 200, {
+      object: 'list',
+      data: [
+        {
+          id: process.env.OPENAI_MODEL_NAME || 'kombai-chat',
+          object: 'model',
+          created: 0,
+          owned_by: 'kombai',
+        },
+      ],
     });
     return;
   }
 
-  sendJson(res, 404, { success: false, error: 'Not Found' });
+  if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
+    await handleChatCompletions(req, res);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/auth/api-key') {
+    await handleAuthCode(req, res);
+    return;
+  }
+
+  sendError(res, 404, 'Not Found');
 }
 
 const server = http.createServer((req, res) => {
   route(req, res).catch((error) => {
-    sendJson(res, 500, { success: false, error: error.message });
+    if (res.headersSent) {
+      res.destroy(error);
+      return;
+    }
+    sendError(res, 500, error.message || String(error), 'server_error');
   });
 });
 
