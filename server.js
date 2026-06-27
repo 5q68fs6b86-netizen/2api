@@ -11,7 +11,7 @@ const {
 } = require('./src/kombaiClient');
 const { AccountPool, isRetryableAccountError } = require('./src/accountPool');
 const { makeChatChunk, makeChatCompletion, randomId } = require('./src/openaiCompat');
-const { autoRegisterAccount } = require('./src/autoRegister');
+const { autoRegisterAccount, checkBrowserRuntime } = require('./src/autoRegister');
 
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
@@ -129,6 +129,43 @@ function buildAutoRegisterOptions(body = {}, onProgress) {
     authUrl: firstNonEmpty(body.authUrl, process.env.KOMBAI_AUTH_URL) || undefined,
     pollTimeoutMs,
     ...(onProgress ? { onProgress } : {}),
+  };
+}
+
+function envConfigured(name) {
+  return Boolean(firstNonEmpty(process.env[name]));
+}
+
+async function buildAutoRegisterDiagnostics() {
+  let browser;
+  try {
+    browser = await checkBrowserRuntime();
+  } catch (error) {
+    browser = {
+      ok: false,
+      error: errorMessage(error),
+    };
+  }
+
+  return {
+    ok: browser.ok === true,
+    runtime: {
+      node: process.version,
+      platform: process.platform,
+      arch: process.arch,
+    },
+    config: {
+      autoEmailPrefix: firstNonEmpty(process.env.AUTO_EMAIL_PREFIX, 'kombai'),
+      turnstileTokenConfigured: envConfigured('TURNSTILE_TOKEN'),
+      inviteTokenConfigured: envConfigured('KOMBAI_INVITE_TOKEN') || envConfigured('INVITE_TOKEN'),
+      authUrlConfigured: envConfigured('KOMBAI_AUTH_URL'),
+      pollTimeoutMs: Number(firstNonEmpty(process.env.KOMBAI_AUTH_TIMEOUT_MS, 120000)) || 120000,
+      tempMailApiConfigured: envConfigured('TEMP_MAIL_API'),
+      tempMailAdminAuthConfigured: envConfigured('TEMP_MAIL_ADMIN_AUTH'),
+      tempMailDomainConfigured: envConfigured('TEMP_MAIL_DOMAIN'),
+      playwrightChromiumArgs: firstNonEmpty(process.env.PLAYWRIGHT_CHROMIUM_ARGS),
+    },
+    browser,
   };
 }
 
@@ -408,6 +445,7 @@ function adminHtml() {
         <div class="col-3 row" style="align-items:end">
           <button onclick="autoRegisterOne(this)">注册一个</button>
           <button class="secondary" onclick="autoFillPool(this)">填充号池</button>
+          <button class="secondary" onclick="checkAutoRegisterDiagnostics(this)">检查环境</button>
         </div>
       </div>
       <div id="autoRegStatus" style="margin-top:12px"></div>
@@ -570,13 +608,13 @@ function adminHtml() {
           }),
         });
         if (data.success) {
-          setAutoRegStatus('注册成功！邮箱: ' + esc(data.email) + '，已自动添加到号池。', 'ok');
+          setAutoRegStatus('注册成功！邮箱: ' + data.email + '，已自动添加到号池。', 'ok');
         } else {
-          setAutoRegStatus('注册失败: ' + esc(data.error || '未知错误'), 'error');
+          setAutoRegStatus('注册失败: ' + (data.error || '未知错误'), 'error');
         }
         await loadState();
       } catch (error) {
-        setAutoRegStatus('注册失败: ' + esc(error.message), 'error');
+        setAutoRegStatus('注册失败: ' + error.message, 'error');
       } finally {
         btn.disabled = false;
       }
@@ -602,11 +640,33 @@ function adminHtml() {
           const firstError = data.results.find(function(r) { return !r.success && r.error; });
           setAutoRegStatus('填充完成：成功 ' + ok + ' 个，失败 ' + fail + ' 个。' + (firstError ? ' 首个错误: ' + firstError.error : ''), ok > 0 ? 'ok' : 'warn');
         } else {
-          setAutoRegStatus('填充完成: ' + esc(JSON.stringify(data)), 'ok');
+          setAutoRegStatus('填充完成: ' + JSON.stringify(data), 'ok');
         }
         await loadState();
       } catch (error) {
-        setAutoRegStatus('填充失败: ' + esc(error.message), 'error');
+        setAutoRegStatus('填充失败: ' + error.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function checkAutoRegisterDiagnostics(btn) {
+      btn.disabled = true;
+      setAutoRegStatus('正在检查自动注册环境...', 'muted');
+      try {
+        const data = await api('/admin/api/auto-register/diagnostics');
+        const missing = [];
+        if (!data.config.turnstileTokenConfigured) missing.push('TURNSTILE_TOKEN');
+        if (!data.browser.ok) missing.push('Playwright Chromium');
+        setAutoRegStatus(
+          (data.ok ? '环境检查通过。' : '环境检查未通过。') +
+            ' 浏览器: ' + (data.browser.ok ? '正常' : (data.browser.error || '异常')) +
+            '；Turnstile: ' + (data.config.turnstileTokenConfigured ? '已配置' : '未配置') +
+            (missing.length ? '；需要检查: ' + missing.join(', ') : ''),
+          data.ok ? 'ok' : 'warn',
+        );
+      } catch (error) {
+        setAutoRegStatus('环境检查失败: ' + error.message, 'error');
       } finally {
         btn.disabled = false;
       }
@@ -623,6 +683,11 @@ async function handleAdminApi(req, res, url) {
 
   if (req.method === 'GET' && url.pathname === '/admin/api/state') {
     sendJson(res, 200, accountPool.getState());
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/admin/api/auto-register/diagnostics') {
+    sendJson(res, 200, await buildAutoRegisterDiagnostics());
     return;
   }
 
@@ -693,16 +758,12 @@ async function handleAdminApi(req, res, url) {
 
   if (req.method === 'POST' && url.pathname === '/admin/api/auto-register') {
     try {
-      const result = await autoRegisterAccount({
-        emailPrefix: body.emailPrefix || 'kombai',
-        turnstileToken: body.turnstileToken,
-        inviteToken: body.inviteToken,
-        authUrl: body.authUrl,
-        pollTimeoutMs: body.pollTimeoutMs || 120000,
-        onProgress: (progress) => {
+      const result = await autoRegisterAccount(buildAutoRegisterOptions(
+        body,
+        (progress) => {
           console.log('[auto-register]', JSON.stringify(progress));
         },
-      });
+      ));
       if (result.success && result.apiKey) {
         const account = accountPool.addAccount({
           apiKey: result.apiKey,
@@ -731,13 +792,7 @@ async function handleAdminApi(req, res, url) {
     const results = [];
     for (let i = 0; i < count; i++) {
       try {
-        const result = await autoRegisterAccount({
-          emailPrefix: body.emailPrefix || 'kombai',
-          turnstileToken: body.turnstileToken,
-          inviteToken: body.inviteToken,
-          authUrl: body.authUrl,
-          pollTimeoutMs: body.pollTimeoutMs || 120000,
-        });
+        const result = await autoRegisterAccount(buildAutoRegisterOptions(body));
         if (result.success && result.apiKey) {
           const account = accountPool.addAccount({
             apiKey: result.apiKey,

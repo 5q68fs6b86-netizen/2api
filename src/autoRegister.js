@@ -56,6 +56,26 @@ async function launchChromium() {
   return chromium.launch(browserLaunchOptions());
 }
 
+async function checkBrowserRuntime() {
+  const startedAt = Date.now();
+  const browser = await launchChromium();
+  try {
+    const context = await browser.newContext({ userAgent: DEFAULT_USER_AGENT });
+    const page = await context.newPage();
+    await page.setContent('<!doctype html><title>ok</title>');
+    const title = await page.title();
+    await context.close();
+
+    return {
+      ok: title === 'ok',
+      elapsedMs: Date.now() - startedAt,
+      launchOptions: browserLaunchOptions(),
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
 function extractApiKeyToken(data) {
   if (!data || typeof data !== 'object') return '';
   return (
@@ -603,6 +623,7 @@ async function autoRegisterAccount(options = {}) {
 module.exports = {
   autoRegisterAccount,
   browserLaunchOptions,
+  checkBrowserRuntime,
   completeVscodeConnect,
   extractApiKeyToken,
   visitVerificationLink,

@@ -2,7 +2,9 @@ services:
   2api:
     build: .
     image: 2api:local
+    init: true
     restart: unless-stopped
+    shm_size: "1gb"
     ports:
       - "${PORT:-3000}:3000"
     environment:
@@ -12,6 +14,15 @@ services:
       ACCOUNT_POOL_SIZE: "${ACCOUNT_POOL_SIZE:-5}"
       KOMBAI_API_KEYS: "${KOMBAI_API_KEYS:-}"
       PROXY_LIST: "${PROXY_LIST:-}"
+      AUTO_EMAIL_PREFIX: "${AUTO_EMAIL_PREFIX:-kombai}"
+      TURNSTILE_TOKEN: "${TURNSTILE_TOKEN:-}"
+      KOMBAI_INVITE_TOKEN: "${KOMBAI_INVITE_TOKEN:-}"
+      KOMBAI_AUTH_URL: "${KOMBAI_AUTH_URL:-}"
+      KOMBAI_AUTH_TIMEOUT_MS: "${KOMBAI_AUTH_TIMEOUT_MS:-120000}"
+      TEMP_MAIL_API: "${TEMP_MAIL_API:-}"
+      TEMP_MAIL_ADMIN_AUTH: "${TEMP_MAIL_ADMIN_AUTH:-}"
+      TEMP_MAIL_DOMAIN: "${TEMP_MAIL_DOMAIN:-}"
+      PLAYWRIGHT_CHROMIUM_ARGS: "${PLAYWRIGHT_CHROMIUM_ARGS:-}"
     volumes:
       - 2api-data:/data
 
