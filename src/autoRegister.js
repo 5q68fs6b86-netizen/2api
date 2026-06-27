@@ -219,21 +219,21 @@ async function apiLoginOnDomain(baseUrl, email, password) {
 }
 
 /**
- * 浏览器表单登录
+ * 浏览器表单登录 - 填写表单并等待提交
  */
 async function browserFormLogin(page, credentials) {
   try {
-    // 尝试多种方式找到并填写登录表单
+    // 等待页面稳定
+    await page.waitForTimeout(2000);
+
+    // 找 email 输入框（login 页面用 type="text", signup 用 type="email"）
     const emailSelectors = [
-      'input[type="email"]:visible',
-      'input[name="email"]:visible',
-      'input[placeholder*="email" i]:visible',
       'input[autocomplete="email"]:visible',
-      'input[id*="email" i]:visible',
+      'input[type="email"]:visible',
+      'input[type="text"][placeholder*="email" i]:visible',
     ];
     const passwordSelectors = [
       'input[type="password"]:visible',
-      'input[name="password"]:visible',
       'input[autocomplete="current-password"]:visible',
     ];
 
@@ -242,43 +242,78 @@ async function browserFormLogin(page, credentials) {
 
     for (const sel of emailSelectors) {
       const el = page.locator(sel).first();
-      if (await el.isVisible({ timeout: 500 }).catch(() => false)) {
+      if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
         emailInput = el;
+        console.log('[auto-register] browserFormLogin found email:', sel);
         break;
       }
     }
 
     for (const sel of passwordSelectors) {
       const el = page.locator(sel).first();
-      if (await el.isVisible({ timeout: 500 }).catch(() => false)) {
+      if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
         passwordInput = el;
+        console.log('[auto-register] browserFormLogin found password:', sel);
         break;
       }
     }
 
-    if (emailInput && passwordInput && credentials.email && credentials.password) {
-      await emailInput.fill(credentials.email);
-      await passwordInput.fill(credentials.password);
-
-      const loginBtnSelectors = [
-        'button:has-text("Log in")',
-        'button:has-text("Login")',
-        'button:has-text("Sign in")',
-        'button[type="submit"]',
-      ];
-
-      for (const sel of loginBtnSelectors) {
-        const btn = page.locator(sel).first();
-        if (await btn.isVisible({ timeout: 500 }).catch(() => false)) {
-          await btn.click();
-          break;
-        }
-      }
-
-      await page.waitForTimeout(5000);
+    if (!emailInput || !passwordInput) {
+      console.log('[auto-register] browserFormLogin: form inputs not found');
+      return false;
     }
+
+    // 用 type() 模拟用户逐字输入，触发前端验证
+    await emailInput.click();
+    await page.keyboard.type(credentials.email, { delay: 30 });
+    await page.waitForTimeout(500);
+
+    await passwordInput.click();
+    await page.keyboard.type(credentials.password, { delay: 30 });
+    await page.waitForTimeout(1000);
+
+    // 等待按钮变为可用状态（最多 10 秒）
+    const loginBtnSelectors = [
+      'button:has-text("Log in with email")',
+      'button:has-text("Log In")',
+      'button:has-text("Login")',
+      'button:has-text("Sign in")',
+      'button:has-text("Log in")',
+    ];
+
+    let loginBtn = null;
+    for (const sel of loginBtnSelectors) {
+      const el = page.locator(sel).first();
+      if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
+        loginBtn = el;
+        console.log('[auto-register] browserFormLogin found button:', sel);
+        break;
+      }
+    }
+
+    if (!loginBtn) {
+      console.log('[auto-register] browserFormLogin: login button not found');
+      return false;
+    }
+
+    // 等待按钮可用（最多 10 秒）
+    for (let i = 0; i < 20; i++) {
+      const disabled = await loginBtn.isDisabled().catch(() => true);
+      if (!disabled) break;
+      await page.waitForTimeout(500);
+    }
+
+    // 点击登录
+    await loginBtn.click({ timeout: 5000 });
+    console.log('[auto-register] browserFormLogin clicked login button');
+
+    // 等待导航完成
+    await page.waitForTimeout(8000);
+
+    return true;
   } catch (error) {
     console.error('[auto-register] browserFormLogin error:', error.message);
+    return false;
   }
 }
 
