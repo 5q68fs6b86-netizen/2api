@@ -2,6 +2,7 @@
   "scripts": {
     "auth": "node scripts/auth.js",
     "chat": "node scripts/chat.js",
+    "connect-account": "node scripts/connect-account.js",
     "start": "node server.js",
     "register": "node scripts/register.js"
   },
