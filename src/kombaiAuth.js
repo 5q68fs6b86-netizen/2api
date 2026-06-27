@@ -2,6 +2,7 @@
 
 const { CookieJar, request } = require('./httpClient');
 const { DEFAULT_TEMP_MAIL_DOMAIN, createTempEmail, waitForVerificationEmail } = require('./tempMail');
+const { solveTurnstile } = require('./turnstileSolver');
 
 const DEFAULT_KOMBAI_AUTH_CONNECT_URL = 'https://agent.kombai.com/vscode-connect';
 const DEFAULT_AGENT_AUTH_URL = 'https://auth.agent.kombai.com';
@@ -92,21 +93,31 @@ async function signup(email, password, options = {}) {
       : await getSignupConfig({ jar, authUrl });
   const pageConfig = config.pageConfig;
   const turnstileSiteKey = pageConfig ? pageConfig.turnstile_site_key : null;
-  const turnstileToken = firstNonEmpty(options.turnstileToken, process.env.TURNSTILE_TOKEN);
+  let turnstileToken = firstNonEmpty(options.turnstileToken, process.env.TURNSTILE_TOKEN);
   const inviteToken = firstNonEmpty(options.inviteToken, process.env.KOMBAI_INVITE_TOKEN, process.env.INVITE_TOKEN);
 
+  // 如果需要 Turnstile 但未提供 token，自动求解
   if (turnstileSiteKey && !turnstileToken) {
-    return {
-      success: false,
-      status: 0,
-      errorType: 'turnstile_required',
-      error: {
-        message: '注册页需要 Turnstile token；请在请求中传 turnstileToken，或设置 TURNSTILE_TOKEN 环境变量',
-        siteKey: turnstileSiteKey,
-      },
-      jar,
-      pageConfig,
-    };
+    console.log('[kombai-auth] 检测到 Turnstile 验证，自动求解中...');
+    const solverResult = await solveTurnstile(`${authUrl}/en/signup`, {
+      timeoutMs: Number(process.env.TURNSTILE_TIMEOUT_MS || 90000),
+    });
+    if (solverResult.success && solverResult.token) {
+      turnstileToken = solverResult.token;
+      console.log('[kombai-auth] Turnstile 求解成功');
+    } else {
+      return {
+        success: false,
+        status: 0,
+        errorType: 'turnstile_required',
+        error: {
+          message: `Turnstile 自动求解失败: ${solverResult.error || '未知错误'}`,
+          siteKey: turnstileSiteKey,
+        },
+        jar,
+        pageConfig,
+      };
+    }
   }
 
   const body = {
@@ -158,30 +169,40 @@ async function registerAccount(options = {}) {
   const jar = new CookieJar();
   const config = options.skipConfig ? { pageConfig: null } : await getSignupConfig({ jar, authUrl });
   const turnstileSiteKey = config.pageConfig ? config.pageConfig.turnstile_site_key : null;
-  const turnstileToken = firstNonEmpty(options.turnstileToken, process.env.TURNSTILE_TOKEN);
+  let turnstileToken = firstNonEmpty(options.turnstileToken, process.env.TURNSTILE_TOKEN);
   const inviteToken = firstNonEmpty(options.inviteToken, process.env.KOMBAI_INVITE_TOKEN, process.env.INVITE_TOKEN);
 
+  // 如果需要 Turnstile 但未提供 token，自动求解
   if (turnstileSiteKey && !turnstileToken) {
-    return {
-      success: false,
-      authUrl,
-      email: options.email || null,
-      password: options.password || null,
-      tempEmail: null,
-      signup: {
+    console.log('[kombai-auth] 检测到 Turnstile 验证，自动求解中...');
+    const solverResult = await solveTurnstile(`${authUrl}/en/signup`, {
+      timeoutMs: Number(process.env.TURNSTILE_TIMEOUT_MS || 90000),
+    });
+    if (solverResult.success && solverResult.token) {
+      turnstileToken = solverResult.token;
+      console.log('[kombai-auth] Turnstile 求解成功');
+    } else {
+      return {
         success: false,
-        status: 0,
-        errorType: 'turnstile_required',
-        error: {
-          message: '注册页需要 Turnstile token；请在请求中传 turnstileToken，或设置 TURNSTILE_TOKEN 环境变量',
-          siteKey: turnstileSiteKey,
+        authUrl,
+        email: options.email || null,
+        password: options.password || null,
+        tempEmail: null,
+        signup: {
+          success: false,
+          status: 0,
+          errorType: 'turnstile_required',
+          error: {
+            message: `Turnstile 自动求解失败: ${solverResult.error || '未知错误'}`,
+            siteKey: turnstileSiteKey,
+          },
+          requiresTurnstile: true,
         },
-        requiresTurnstile: true,
-      },
-      verification: null,
-      login: null,
-      cookies: jar.toJSON(),
-    };
+        verification: null,
+        login: null,
+        cookies: jar.toJSON(),
+      };
+    }
   }
 
   const tempEmail = options.email

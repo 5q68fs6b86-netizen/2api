@@ -21,6 +21,7 @@ const {
   pollAuthCode,
   verifyApiKey,
 } = require('./kombaiClient');
+const { solveTurnstile } = require('./turnstileSolver');
 
 const DEFAULT_USER_AGENT =
   process.env.USER_AGENT ||
@@ -503,10 +504,23 @@ async function autoRegisterAccount(options = {}) {
     throw new Error(`获取注册配置失败: ${error.message}`);
   }
 
-  if (pageConfig && pageConfig.turnstile_site_key && !turnstileToken) {
-    const message = '注册页需要 Turnstile token；请在请求中传 turnstileToken，或设置 TURNSTILE_TOKEN 环境变量';
-    onProgress({ step: 'signup', status: 'error', error: message, siteKey: pageConfig.turnstile_site_key });
-    throw new Error(`注册失败: ${message}`);
+  // 如果注册页需要 Turnstile 且未手动提供 token，自动调用 solver
+  let resolvedTurnstileToken = turnstileToken;
+  if (pageConfig && pageConfig.turnstile_site_key && !resolvedTurnstileToken) {
+    onProgress({ step: 'turnstile_solve', status: 'running', siteKey: pageConfig.turnstile_site_key });
+    console.log('[auto-register] 检测到 Turnstile 验证，自动求解中...');
+    const solverResult = await solveTurnstile(`${authUrl}/en/signup`, {
+      timeoutMs: Number(process.env.TURNSTILE_TIMEOUT_MS || 90000),
+    });
+    if (solverResult.success && solverResult.token) {
+      resolvedTurnstileToken = solverResult.token;
+      onProgress({ step: 'turnstile_solve', status: 'done' });
+      console.log('[auto-register] Turnstile 求解成功');
+    } else {
+      const message = `Turnstile 自动求解失败: ${solverResult.error || '未知错误'}`;
+      onProgress({ step: 'turnstile_solve', status: 'error', error: message });
+      throw new Error(`注册失败: ${message}`);
+    }
   }
 
   // Step 2: 创建临时邮箱
@@ -532,7 +546,7 @@ async function autoRegisterAccount(options = {}) {
       jar,
       authUrl,
       pageConfig,
-      turnstileToken,
+      turnstileToken: resolvedTurnstileToken,
       inviteToken,
     });
     onProgress({ step: 'signup', status: 'done', userId: signupResult.userId });
