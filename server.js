@@ -680,6 +680,9 @@ async function handleAdminApi(req, res, url) {
         inviteToken: body.inviteToken,
         authUrl: body.authUrl,
         pollTimeoutMs: body.pollTimeoutMs || 120000,
+        onProgress: (progress) => {
+          console.log('[auto-register]', JSON.stringify(progress));
+        },
       });
       if (result.success && result.apiKey) {
         const account = accountPool.addAccount({
@@ -692,6 +695,7 @@ async function handleAdminApi(req, res, url) {
         sendJson(res, 200, result);
       }
     } catch (error) {
+      console.error('[auto-register] Error:', error.message);
       sendJson(res, 500, { success: false, error: error.message });
     }
     return;

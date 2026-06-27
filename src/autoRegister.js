@@ -264,12 +264,14 @@ async function autoRegisterAccount(options = {}) {
 
   // Step 8: 浏览器访问 vscode-connect URL 完成授权
   onProgress({ step: 'browser_connect', status: 'running' });
+  let connectResult = null;
   try {
-    const connectResult = await completeVscodeConnect(connectAuth.url, cookies);
+    connectResult = await completeVscodeConnect(connectAuth.url, cookies);
     onProgress({
       step: 'browser_connect',
       status: 'done',
       url: connectResult.url,
+      pageText: connectResult.pageText,
     });
   } catch (error) {
     onProgress({ step: 'browser_connect', status: 'error', error: error.message });
