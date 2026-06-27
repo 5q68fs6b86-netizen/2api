@@ -3,7 +3,7 @@
 const { CookieJar, request } = require('./httpClient');
 const { DEFAULT_TEMP_MAIL_DOMAIN, createTempEmail, waitForVerificationEmail } = require('./tempMail');
 
-const KOMBAI_AUTH_URL = process.env.KOMBAI_AUTH_URL || 'https://auth.kombai.com';
+const DEFAULT_KOMBAI_AUTH_URL = process.env.KOMBAI_AUTH_URL || 'https://auth.kombai.com';
 const DEFAULT_USER_AGENT = process.env.USER_AGENT ||
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
@@ -15,13 +15,18 @@ function makeEmailName(prefix = 'kombai') {
   return `${prefix}${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function authHeaders(jar, referer) {
+function normalizeAuthUrl(authUrl = DEFAULT_KOMBAI_AUTH_URL) {
+  return String(authUrl).replace(/\/+$/, '');
+}
+
+function authHeaders(jar, referer, authUrl = DEFAULT_KOMBAI_AUTH_URL) {
+  const baseUrl = normalizeAuthUrl(authUrl);
   const cookie = jar.header();
   return {
     'Content-Type': 'application/json',
     'X-CSRF-Token': '-.-',
-    Origin: KOMBAI_AUTH_URL,
-    Referer: referer || `${KOMBAI_AUTH_URL}/en/signup`,
+    Origin: baseUrl,
+    Referer: referer || `${baseUrl}/en/signup`,
     'User-Agent': DEFAULT_USER_AGENT,
     ...(cookie ? { Cookie: cookie } : {}),
   };
@@ -33,8 +38,10 @@ function extractNextData(html) {
   return JSON.parse(match[1]);
 }
 
-async function getSignupConfig(jar = new CookieJar()) {
-  const resp = await request(`${KOMBAI_AUTH_URL}/en/signup`, {
+async function getSignupConfig(options = {}) {
+  const jar = options.jar || new CookieJar();
+  const authUrl = normalizeAuthUrl(options.authUrl);
+  const resp = await request(`${authUrl}/en/signup`, {
     headers: { 'User-Agent': DEFAULT_USER_AGENT },
   });
   jar.addFromHeaders(resp.headers['set-cookie']);
@@ -55,12 +62,20 @@ async function getSignupConfig(jar = new CookieJar()) {
 
 async function signup(email, password, options = {}) {
   const jar = options.jar || new CookieJar();
-  const config = options.skipConfig ? { pageConfig: null } : await getSignupConfig(jar);
+  const authUrl = normalizeAuthUrl(options.authUrl);
+  const config = options.skipConfig ? { pageConfig: null } : await getSignupConfig({ jar, authUrl });
   const pageConfig = config.pageConfig;
   const turnstileSiteKey = pageConfig ? pageConfig.turnstile_site_key : null;
 
   if (turnstileSiteKey && !options.turnstileToken) {
-    throw new Error(`注册页需要 Turnstile token: ${turnstileSiteKey}`);
+    return {
+      success: false,
+      status: 0,
+      errorType: 'turnstile_required',
+      error: { message: '注册页需要 Turnstile token', siteKey: turnstileSiteKey },
+      jar,
+      pageConfig,
+    };
   }
 
   const body = {
@@ -70,9 +85,9 @@ async function signup(email, password, options = {}) {
     ...(options.inviteToken ? { invite_token: options.inviteToken } : {}),
   };
 
-  const resp = await request(`${KOMBAI_AUTH_URL}/api/fe/v2/signup`, {
+  const resp = await request(`${authUrl}/api/fe/v2/signup`, {
     method: 'POST',
-    headers: authHeaders(jar, `${KOMBAI_AUTH_URL}/en/signup`),
+    headers: authHeaders(jar, `${authUrl}/en/signup`, authUrl),
     body,
   });
   jar.addFromHeaders(resp.headers['set-cookie']);
@@ -90,9 +105,10 @@ async function signup(email, password, options = {}) {
 
 async function login(email, password, options = {}) {
   const jar = options.jar || new CookieJar();
-  const resp = await request(`${KOMBAI_AUTH_URL}/api/fe/v1/login`, {
+  const authUrl = normalizeAuthUrl(options.authUrl);
+  const resp = await request(`${authUrl}/api/fe/v1/login`, {
     method: 'POST',
-    headers: authHeaders(jar, `${KOMBAI_AUTH_URL}/en/login`),
+    headers: authHeaders(jar, `${authUrl}/en/login`, authUrl),
     body: { email, password },
   });
   jar.addFromHeaders(resp.headers['set-cookie']);
@@ -115,6 +131,7 @@ async function registerAccount(options = {}) {
 
   const signupResult = await signup(email, password, {
     jar,
+    authUrl: options.authUrl,
     turnstileToken: options.turnstileToken,
     inviteToken: options.inviteToken,
   });
@@ -125,11 +142,12 @@ async function registerAccount(options = {}) {
   }
 
   const loginResult = signupResult.success && options.login !== false
-    ? await login(email, password, { jar })
+    ? await login(email, password, { jar, authUrl: options.authUrl })
     : null;
 
   return {
     success: signupResult.success,
+    authUrl: normalizeAuthUrl(options.authUrl),
     email,
     password,
     tempEmail,
@@ -153,10 +171,12 @@ async function registerAccount(options = {}) {
 }
 
 module.exports = {
+  DEFAULT_KOMBAI_AUTH_URL,
   getSignupConfig,
   login,
   makeEmailName,
   makePassword,
+  normalizeAuthUrl,
   registerAccount,
   signup,
 };

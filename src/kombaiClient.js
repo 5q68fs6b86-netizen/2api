@@ -7,6 +7,7 @@ const { getClientContext } = require('./footprint');
 
 const WS_URL = process.env.KOMBAI_WS_URL || 'wss://ws.assistant.app.kombai.com';
 const API_URL = process.env.KOMBAI_API_URL || 'https://api.assistant.app.kombai.com';
+const AUTH_CONNECT_URL = process.env.KOMBAI_AUTH_CONNECT_URL || 'https://agent.kombai.com/vscode-connect';
 const SESSION_CHARS = 'abcdefghijklmnopqrstuvqxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
 function randomSessionId(length = 16) {
@@ -15,6 +16,16 @@ function randomSessionId(length = 16) {
     output += SESSION_CHARS[Math.floor(Math.random() * SESSION_CHARS.length)];
   }
   return output;
+}
+
+function buildAuthConnectUrl(options = {}) {
+  const code = options.code || randomSessionId(16);
+  const url = new URL(AUTH_CONNECT_URL);
+  url.searchParams.set('redirectUri', options.redirectUri || 'kombai.kombai://auth-callback');
+  url.searchParams.set('code', Buffer.from(code, 'utf8').toString('base64'));
+  url.searchParams.set('from', options.from || 'vscode');
+  url.searchParams.set('type', options.type || 'new');
+  return { code, url: url.toString() };
 }
 
 function socketHeaders(apiKey) {
@@ -194,15 +205,62 @@ async function exchangeAuthCode(code) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.errorCode || data.error || `Kombai auth exchange failed: HTTP ${response.status}`);
+    const error = new Error(data.errorCode || data.error || data.message || `Kombai auth exchange failed: HTTP ${response.status}`);
+    error.statusCode = response.status;
+    error.data = data;
+    throw error;
+  }
+  return data;
+}
+
+async function pollAuthCode(code, options = {}) {
+  const timeoutMs = Number(options.timeoutMs || process.env.KOMBAI_AUTH_TIMEOUT_MS || 15 * 60 * 1000);
+  const intervalMs = Number(options.intervalMs || process.env.KOMBAI_AUTH_INTERVAL_MS || 2000);
+  const startedAt = Date.now();
+  let lastError = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      return await exchangeAuthCode(code);
+    } catch (error) {
+      lastError = error;
+      if (![401, 403, 404].includes(error.statusCode)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  const error = new Error(`等待授权超时: ${timeoutMs}ms`);
+  error.cause = lastError;
+  throw error;
+}
+
+async function verifyApiKey(apiKey) {
+  const sessionId = randomSessionId();
+  const url = new URL('/auth/api-key', API_URL);
+  url.searchParams.set('apiKey', apiKey);
+
+  const response = await fetch(url, {
+    method: 'PUT',
+    body: '',
+    headers: restHeaders({ apiKey, sessionId }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data.errorCode || data.error || data.message || `Kombai API key verification failed: HTTP ${response.status}`);
+    error.statusCode = response.status;
+    error.data = data;
+    throw error;
   }
   return data;
 }
 
 module.exports = {
+  buildAuthConnectUrl,
   completeChat,
   exchangeAuthCode,
+  pollAuthCode,
   randomSessionId,
   restHeaders,
   streamChatCompletion,
+  verifyApiKey,
 };
