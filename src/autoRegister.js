@@ -116,21 +116,33 @@ async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {})
     let url = page.url();
     console.log('[auto-register] browser_connect initial url:', url);
 
-    // 如果被重定向到登录页面，在该域名下通过 API 登录
+    // 如果被重定向到登录/注册页面
     if (url.includes('login') || url.includes('signup')) {
-      // 从当前页面 URL 提取 auth 基础 URL
-      const currentUrl = new URL(url);
-      const authBaseUrl = `${currentUrl.protocol}//${currentUrl.hostname}`;
+      // 先检查是否在 signup 页面，需要切换到 login
+      if (url.includes('signup')) {
+        const switchToLoginSelectors = [
+          'button:has-text("Already have an account?")',
+          'text=Already have an account?',
+        ];
+        for (const sel of switchToLoginSelectors) {
+          const el = page.locator(sel).first();
+          if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
+            await el.click();
+            await page.waitForTimeout(3000);
+            url = page.url();
+            console.log('[auto-register] browser_connect switched to login, url:', url);
+            break;
+          }
+        }
+      }
 
-      // 尝试通过 API 登录
+      // 在该域名下通过 API 登录
+      const currentUrl = new URL(page.url());
+      const authBaseUrl = `${currentUrl.protocol}//${currentUrl.hostname}`;
       const apiLoginResult = await apiLoginOnDomain(authBaseUrl, credentials.email, credentials.password);
-      console.log('[auto-register] API login result:', JSON.stringify({
-        success: apiLoginResult.success,
-        status: apiLoginResult.status,
-      }));
+      console.log('[auto-register] API login result:', JSON.stringify({ success: apiLoginResult.success, status: apiLoginResult.status }));
 
       if (apiLoginResult.success && apiLoginResult.cookies) {
-        // 设置登录后的 cookies
         for (const [name, value] of Object.entries(apiLoginResult.cookies)) {
           await context.addCookies([{
             name,
@@ -139,15 +151,13 @@ async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {})
             path: '/',
           }]);
         }
-
-        // 重新访问 connect URL
         await page.goto(connectUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForTimeout(5000);
         url = page.url();
         console.log('[auto-register] browser_connect after API login, url:', url);
       }
 
-      // 如果 API 登录不成功或仍然在登录页，尝试浏览器表单登录
+      // 如果仍然需要登录，用浏览器表单
       if (url.includes('login') || url.includes('signup')) {
         await browserFormLogin(page, credentials);
         await page.waitForTimeout(5000);
