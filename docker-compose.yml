@@ -1,0 +1,19 @@
+services:
+  2api:
+    build: .
+    image: 2api:local
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      PORT: "3000"
+      DATA_DIR: /data
+      ADMIN_TOKEN: "${ADMIN_TOKEN:-change-me}"
+      ACCOUNT_POOL_SIZE: "${ACCOUNT_POOL_SIZE:-5}"
+      KOMBAI_API_KEYS: "${KOMBAI_API_KEYS:-}"
+      PROXY_LIST: "${PROXY_LIST:-}"
+    volumes:
+      - 2api-data:/data
+
+volumes:
+  2api-data:
