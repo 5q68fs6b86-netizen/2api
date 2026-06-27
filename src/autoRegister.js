@@ -90,42 +90,92 @@ async function visitVerificationLink(verifyUrl, cookies = {}) {
 
 /**
  * 用 Playwright 浏览器完成 vscode-connect 授权
- * 在已登录状态下访问 vscode-connect URL，让浏览器自动完成重定向
+ * 如果被重定向到登录页面，自动填写邮箱密码登录
  */
-async function completeVscodeConnect(connectUrl, cookies = {}) {
+async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {}) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ userAgent: DEFAULT_USER_AGENT });
   const page = await context.newPage();
 
   try {
-    // 设置 auth cookies
-    const hostname = new URL(connectUrl).hostname;
-    const cookieList = Object.entries(cookies).map(([name, value]) => ({
-      name,
-      value: String(value),
-      domain: hostname,
-      path: '/',
-    }));
-    if (cookieList.length > 0) {
-      await context.addCookies(cookieList);
+    // 设置已有的 auth cookies（可能跨域不生效，但先试试）
+    for (const [domain, domainCookies] of Object.entries(groupCookiesByDomain(cookies, connectUrl))) {
+      const cookieList = Object.entries(domainCookies).map(([name, value]) => ({
+        name,
+        value: String(value),
+        domain,
+        path: '/',
+      }));
+      if (cookieList.length > 0) {
+        await context.addCookies(cookieList);
+      }
     }
 
     await page.goto(connectUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    // 等待重定向完成
-    await page.waitForTimeout(8000);
+    await page.waitForTimeout(3000);
 
-    const url = page.url();
+    let url = page.url();
+
+    // 如果被重定向到登录/注册页面，自动填写表单
+    if ((url.includes('login') || url.includes('signup')) && credentials.email && credentials.password) {
+      try {
+        // 如果在 signup 页面，先切换到 login
+        const loginLink = page.locator('a:has-text("Log in"), a:has-text("Login"), a:has-text("Sign in")').first();
+        if (await loginLink.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await loginLink.click();
+          await page.waitForTimeout(2000);
+        }
+
+        // 填写登录表单
+        const emailInput = page.locator('input[type="email"]:visible, input[name="email"]:visible, input[placeholder*="email" i]:visible').first();
+        const passwordInput = page.locator('input[type="password"]:visible').first();
+
+        if (await emailInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+          await emailInput.fill(credentials.email);
+          await passwordInput.fill(credentials.password);
+
+          // 点击登录按钮
+          const loginBtn = page.locator('button:has-text("Log in"), button:has-text("Login"), button:has-text("Sign in"), button[type="submit"]').first();
+          await loginBtn.click();
+          await page.waitForTimeout(5000);
+
+          url = page.url();
+        }
+      } catch (loginError) {
+        // 登录失败不中断流程
+      }
+    }
+
+    // 等待可能的重定向
+    await page.waitForTimeout(5000);
+    url = page.url();
     const text = await page.textContent('body').catch(() => '');
 
     return {
+      success: !url.includes('signup') && !url.includes('error'),
       url,
       pageText: (text || '').substring(0, 500),
     };
   } catch (error) {
-    return { error: error.message };
+    return { success: false, error: error.message };
   } finally {
     await browser.close();
   }
+}
+
+function groupCookiesByDomain(cookies, url) {
+  const hostname = new URL(url).hostname;
+  const result = {};
+  for (const [name, value] of Object.entries(cookies)) {
+    // 为主域名和所有父域添加 cookie
+    const parts = hostname.split('.');
+    for (let i = 0; i < parts.length - 1; i++) {
+      const domain = parts.slice(i).join('.');
+      if (!result[domain]) result[domain] = {};
+      result[domain][name] = value;
+    }
+  }
+  return result;
 }
 
 /**
@@ -266,10 +316,10 @@ async function autoRegisterAccount(options = {}) {
   onProgress({ step: 'browser_connect', status: 'running' });
   let connectResult = null;
   try {
-    connectResult = await completeVscodeConnect(connectAuth.url, cookies);
+    connectResult = await completeVscodeConnect(connectAuth.url, cookies, { email, password });
     onProgress({
       step: 'browser_connect',
-      status: 'done',
+      status: connectResult.success ? 'done' : 'partial',
       url: connectResult.url,
       pageText: connectResult.pageText,
     });
