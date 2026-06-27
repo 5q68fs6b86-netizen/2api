@@ -490,10 +490,20 @@ function adminHtml() {
       const headers = { 'Content-Type': 'application/json' };
       const token = tokenInput.value.trim();
       if (token) headers.Authorization = 'Bearer ' + token;
-      const res = await fetch(path, { ...options, headers: { ...headers, ...(options && options.headers || {}) } });
+      const apiUrl = adminApiUrl(path);
+      const res = await fetch(apiUrl, { ...options, headers: { ...headers, ...(options && options.headers || {}) } });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error && data.error.message || 'HTTP ' + res.status);
       return data;
+    }
+
+    function adminApiUrl(path) {
+      if (!path.startsWith('/admin/api/')) return path;
+      const base = new URL(window.location.href);
+      base.search = '';
+      base.hash = '';
+      if (!base.pathname.endsWith('/')) base.pathname += '/';
+      return new URL(path.slice('/admin/'.length), base).toString();
     }
 
     function esc(value) {
@@ -787,7 +797,10 @@ async function handleAdminApi(req, res, url) {
   if (req.method === 'POST' && url.pathname === '/admin/api/auto-fill') {
     const state = accountPool.getState();
     const missing = state.pool.missingAccounts;
-    const count = Math.min(Number(body.count) || missing, 20);
+    const requestedCount = body.count === undefined || body.count === null || body.count === ''
+      ? missing
+      : Number(body.count);
+    const count = Math.min(Number.isFinite(requestedCount) ? requestedCount : missing, 20);
     if (count <= 0) {
       sendJson(res, 200, { success: true, message: '号池已满，无需填充', results: [] });
       return;
