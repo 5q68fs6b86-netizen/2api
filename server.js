@@ -5,11 +5,16 @@ const {
   buildAuthConnectUrl,
   collectChatCompletion,
   exchangeAuthCode,
+  pollAuthCode,
   streamChatCompletion,
+  verifyApiKey,
 } = require('./src/kombaiClient');
+const { AccountPool, isRetryableAccountError } = require('./src/accountPool');
 const { makeChatChunk, makeChatCompletion, randomId } = require('./src/openaiCompat');
 
 const PORT = Number(process.env.PORT || 3000);
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
+const accountPool = new AccountPool();
 
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload, null, 2);
@@ -18,6 +23,14 @@ function sendJson(res, status, payload) {
     'Content-Length': Buffer.byteLength(body),
   });
   res.end(body);
+}
+
+function sendHtml(res, status, html) {
+  res.writeHead(status, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Length': Buffer.byteLength(html),
+  });
+  res.end(html);
 }
 
 function sendError(res, status, message, type = 'invalid_request_error') {
@@ -46,11 +59,11 @@ async function readJson(req) {
   }
 }
 
-function getBearerToken(req) {
+function getRequestApiKey(req) {
   const auth = req.headers.authorization || '';
   if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
   if (req.headers['x-api-key']) return String(req.headers['x-api-key']).trim();
-  return process.env.KOMBAI_API_KEY || '';
+  return '';
 }
 
 function writeSse(res, payload) {
@@ -61,13 +74,77 @@ function finishReasonFor(toolCalls) {
   return toolCalls.length > 0 ? 'tool_calls' : 'stop';
 }
 
-async function handleChatCompletions(req, res) {
-  const apiKey = getBearerToken(req);
-  if (!apiKey) {
-    sendError(res, 401, '缺少 Kombai API key。请设置 KOMBAI_API_KEY，或用 Authorization: Bearer <apiKeyToken> 传入。', 'authentication_error');
-    return;
+function errorMessage(error) {
+  return error && error.message ? error.message : String(error || 'unknown error');
+}
+
+function adminTokenFromRequest(req, url) {
+  const auth = req.headers.authorization || '';
+  if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
+  if (req.headers['x-admin-token']) return String(req.headers['x-admin-token']).trim();
+  return url.searchParams.get('token') || '';
+}
+
+function isLocalRequest(req) {
+  const address = req.socket.remoteAddress || '';
+  return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
+}
+
+function requireAdmin(req, res, url) {
+  if (ADMIN_TOKEN) {
+    if (adminTokenFromRequest(req, url) === ADMIN_TOKEN) return true;
+    sendError(res, 401, 'admin token 无效或缺失', 'authentication_error');
+    return false;
   }
 
+  if (isLocalRequest(req)) return true;
+  sendError(res, 403, '未设置 ADMIN_TOKEN 时，仅允许本机访问 /admin/api', 'authentication_error');
+  return false;
+}
+
+function extractApiKeyToken(data) {
+  if (!data || typeof data !== 'object') return '';
+  return data.apiKeyToken
+    || data.apiKey
+    || data.token
+    || (data.data && extractApiKeyToken(data.data))
+    || '';
+}
+
+async function runCollectWithPool(body, directApiKey, requestId) {
+  const attempts = accountPool.accountAttempts(directApiKey);
+  if (attempts.length === 0) {
+    const error = new Error('号池为空。请在 /admin 添加已授权 Kombai API key，或在请求里传 Authorization: Bearer <apiKeyToken>。');
+    error.statusCode = 401;
+    error.type = 'authentication_error';
+    throw error;
+  }
+
+  let lastError = null;
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index];
+    const proxy = accountPool.pickProxy();
+    const context = { ...attempt, proxy };
+    try {
+      const result = await collectChatCompletion(body, attempt.apiKey, { requestId, proxy });
+      accountPool.recordSuccess(context);
+      return result;
+    } catch (error) {
+      lastError = error;
+      accountPool.recordFailure(context, error);
+      const canRetry = !directApiKey
+        && accountPool.state.config.failoverEnabled !== false
+        && isRetryableAccountError(error)
+        && index < attempts.length - 1;
+      if (!canRetry) throw error;
+    }
+  }
+
+  throw lastError;
+}
+
+async function handleChatCompletions(req, res) {
+  const directApiKey = getRequestApiKey(req);
   const body = await readJson(req);
   const model = body.model || process.env.OPENAI_MODEL_NAME || 'kombai-chat';
   const id = randomId('chatcmpl');
@@ -80,36 +157,93 @@ async function handleChatCompletions(req, res) {
       'X-Accel-Buffering': 'no',
     });
 
-    writeSse(res, makeChatChunk({ id, model, delta: { role: 'assistant' } }));
+    const attempts = accountPool.accountAttempts(directApiKey);
+    if (attempts.length === 0) {
+      writeSse(res, {
+        error: {
+          message: '号池为空。请在 /admin 添加已授权 Kombai API key，或在请求里传 Authorization: Bearer <apiKeyToken>。',
+          type: 'authentication_error',
+          code: 401,
+        },
+      });
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
     const toolCalls = [];
-    for await (const event of streamChatCompletion({ ...body, model }, apiKey, { requestId: id })) {
-      if (event.type === 'text' && event.text) {
-        writeSse(res, makeChatChunk({ id, model, delta: { content: event.text } }));
-      }
-      if (event.type === 'tool_call' && event.toolCall) {
-        const index = toolCalls.length;
-        toolCalls.push(event.toolCall);
-        writeSse(res, makeChatChunk({
-          id,
-          model,
-          delta: {
-            tool_calls: [
-              {
-                index,
-                ...event.toolCall,
+    let roleSent = false;
+    let emitted = false;
+    let lastError = null;
+
+    for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex += 1) {
+      const attempt = attempts[attemptIndex];
+      const proxy = accountPool.pickProxy();
+      const context = { ...attempt, proxy };
+      let attemptEmitted = false;
+
+      try {
+        for await (const event of streamChatCompletion({ ...body, model }, attempt.apiKey, { requestId: id, proxy })) {
+          if (!roleSent) {
+            writeSse(res, makeChatChunk({ id, model, delta: { role: 'assistant' } }));
+            roleSent = true;
+          }
+
+          if (event.type === 'text' && event.text) {
+            emitted = true;
+            attemptEmitted = true;
+            writeSse(res, makeChatChunk({ id, model, delta: { content: event.text } }));
+          }
+          if (event.type === 'tool_call' && event.toolCall) {
+            emitted = true;
+            attemptEmitted = true;
+            const index = toolCalls.length;
+            toolCalls.push(event.toolCall);
+            writeSse(res, makeChatChunk({
+              id,
+              model,
+              delta: {
+                tool_calls: [
+                  {
+                    index,
+                    ...event.toolCall,
+                  },
+                ],
               },
-            ],
-          },
-        }));
+            }));
+          }
+        }
+
+        accountPool.recordSuccess(context);
+        if (!roleSent) writeSse(res, makeChatChunk({ id, model, delta: { role: 'assistant' } }));
+        writeSse(res, makeChatChunk({ id, model, delta: {}, finishReason: finishReasonFor(toolCalls) }));
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      } catch (error) {
+        lastError = error;
+        accountPool.recordFailure(context, error);
+        const canRetry = !directApiKey
+          && !attemptEmitted
+          && !emitted
+          && accountPool.state.config.failoverEnabled !== false
+          && isRetryableAccountError(error)
+          && attemptIndex < attempts.length - 1;
+        if (canRetry) continue;
+        writeSse(res, { error: { message: errorMessage(error), type: 'server_error' } });
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
       }
     }
-    writeSse(res, makeChatChunk({ id, model, delta: {}, finishReason: finishReasonFor(toolCalls) }));
+
+    writeSse(res, { error: { message: errorMessage(lastError), type: 'server_error' } });
     res.write('data: [DONE]\n\n');
     res.end();
     return;
   }
 
-  const result = await collectChatCompletion({ ...body, model }, apiKey, { requestId: id });
+  const result = await runCollectWithPool({ ...body, model }, directApiKey, id);
   sendJson(res, 200, makeChatCompletion({
     id,
     model,

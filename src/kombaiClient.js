@@ -4,6 +4,7 @@ const WebSocket = require('ws');
 const os = require('os');
 const { EXTENSION_VERSION, buildKombaiPayload, randomId } = require('./openaiCompat');
 const { getClientContext } = require('./footprint');
+const { createProxyAgent } = require('./proxyAgent');
 
 const WS_URL = process.env.KOMBAI_WS_URL || 'wss://ws.assistant.app.kombai.com';
 const API_URL = process.env.KOMBAI_API_URL || 'https://api.assistant.app.kombai.com';
@@ -156,21 +157,31 @@ function toolCallsFromFrame(frame) {
   });
 }
 
+function proxyUrlFromOptions(options = {}) {
+  if (options.proxyUrl) return options.proxyUrl;
+  if (options.proxy && options.proxy.uri) return options.proxy.uri;
+  return '';
+}
+
 async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
   const requestId = options.requestId || randomId('chatcmpl');
   const sessionId = options.sessionId || randomSessionId();
   const timeoutMs = Number(process.env.KOMBAI_TIMEOUT_MS || options.timeoutMs || 180000);
   const payload = buildKombaiPayload(openaiBody, requestId);
   const message = buildSocketMessage({ requestId, sessionId, payload });
+  const wsUrl = `${WS_URL}?sessionId=${encodeURIComponent(sessionId)}`;
+  const proxyUrl = proxyUrlFromOptions(options);
+  const wsOptions = {
+    headers: socketHeaders(apiKey),
+  };
+  if (proxyUrl) wsOptions.agent = createProxyAgent(proxyUrl, WS_URL);
 
   const queue = [];
   let notify = null;
   let done = false;
   let failure = null;
 
-  const ws = new WebSocket(`${WS_URL}?sessionId=${encodeURIComponent(sessionId)}`, {
-    headers: socketHeaders(apiKey),
-  });
+  const ws = new WebSocket(wsUrl, wsOptions);
 
   const timeout = setTimeout(() => {
     failure = new Error(`Kombai socket timed out after ${timeoutMs}ms`);
@@ -233,6 +244,8 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
     if (frame.action === 'error') {
       const msg = frame.message || frame.response || frame.error || 'Kombai socket returned an error';
       failure = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+      failure.statusCode = frame.statusCode || frame.status || frame.code;
+      failure.data = frame;
       finish();
       return;
     }
