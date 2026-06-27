@@ -1,5 +1,7 @@
 {
   "scripts": {
+    "auth": "node scripts/auth.js",
+    "chat": "node scripts/chat.js",
     "start": "node server.js",
     "register": "node scripts/register.js"
   },

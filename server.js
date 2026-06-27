@@ -1,7 +1,12 @@
 'use strict';
 
 const http = require('http');
-const { completeChat, exchangeAuthCode, streamChatCompletion } = require('./src/kombaiClient');
+const {
+  buildAuthConnectUrl,
+  completeChat,
+  exchangeAuthCode,
+  streamChatCompletion,
+} = require('./src/kombaiClient');
 const { makeChatChunk, makeChatCompletion, randomId } = require('./src/openaiCompat');
 
 const PORT = Number(process.env.PORT || 3000);
@@ -130,6 +135,16 @@ async function route(req, res) {
 
   if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/auth/api-key') {
     await handleAuthCode(req, res);
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/auth/connect-url') {
+    sendJson(res, 200, buildAuthConnectUrl({
+      code: url.searchParams.get('code') || undefined,
+      type: url.searchParams.get('type') || undefined,
+      redirectUri: url.searchParams.get('redirect_uri') || undefined,
+      from: url.searchParams.get('from') || undefined,
+    }));
     return;
   }
 

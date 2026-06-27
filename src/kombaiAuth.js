@@ -63,7 +63,11 @@ async function getSignupConfig(options = {}) {
 async function signup(email, password, options = {}) {
   const jar = options.jar || new CookieJar();
   const authUrl = normalizeAuthUrl(options.authUrl);
-  const config = options.skipConfig ? { pageConfig: null } : await getSignupConfig({ jar, authUrl });
+  const config = options.pageConfig
+    ? { pageConfig: options.pageConfig }
+    : options.skipConfig
+      ? { pageConfig: null }
+      : await getSignupConfig({ jar, authUrl });
   const pageConfig = config.pageConfig;
   const turnstileSiteKey = pageConfig ? pageConfig.turnstile_site_key : null;
 
@@ -123,15 +127,41 @@ async function login(email, password, options = {}) {
 async function registerAccount(options = {}) {
   const emailName = options.emailName || makeEmailName(options.emailPrefix);
   const password = options.password || makePassword(emailName.slice(-8));
+  const authUrl = normalizeAuthUrl(options.authUrl);
+  const jar = new CookieJar();
+  const config = options.skipConfig ? { pageConfig: null } : await getSignupConfig({ jar, authUrl });
+  const turnstileSiteKey = config.pageConfig ? config.pageConfig.turnstile_site_key : null;
+
+  if (turnstileSiteKey && !options.turnstileToken) {
+    return {
+      success: false,
+      authUrl,
+      email: options.email || null,
+      password: options.password || null,
+      tempEmail: null,
+      signup: {
+        success: false,
+        status: 0,
+        errorType: 'turnstile_required',
+        error: { message: '注册页需要 Turnstile token', siteKey: turnstileSiteKey },
+        requiresTurnstile: true,
+      },
+      verification: null,
+      login: null,
+      cookies: jar.toJSON(),
+    };
+  }
+
   const tempEmail = options.email
     ? null
     : await createTempEmail(emailName, options.tempMail);
   const email = options.email || (tempEmail ? tempEmail.address : `${emailName}@${DEFAULT_TEMP_MAIL_DOMAIN}`);
-  const jar = new CookieJar();
 
   const signupResult = await signup(email, password, {
     jar,
-    authUrl: options.authUrl,
+    authUrl,
+    pageConfig: config.pageConfig,
+    skipConfig: options.skipConfig,
     turnstileToken: options.turnstileToken,
     inviteToken: options.inviteToken,
   });
@@ -142,12 +172,12 @@ async function registerAccount(options = {}) {
   }
 
   const loginResult = signupResult.success && options.login !== false
-    ? await login(email, password, { jar, authUrl: options.authUrl })
+    ? await login(email, password, { jar, authUrl })
     : null;
 
   return {
     success: signupResult.success,
-    authUrl: normalizeAuthUrl(options.authUrl),
+    authUrl,
     email,
     password,
     tempEmail,
