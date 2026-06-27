@@ -112,6 +112,26 @@ function extractApiKeyToken(data) {
     || '';
 }
 
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function buildAutoRegisterOptions(body = {}, onProgress) {
+  const pollTimeoutMs = Number(firstNonEmpty(body.pollTimeoutMs, process.env.KOMBAI_AUTH_TIMEOUT_MS, 120000)) || 120000;
+  return {
+    emailPrefix: firstNonEmpty(body.emailPrefix, process.env.AUTO_EMAIL_PREFIX, 'kombai'),
+    turnstileToken: firstNonEmpty(body.turnstileToken, process.env.TURNSTILE_TOKEN) || undefined,
+    inviteToken: firstNonEmpty(body.inviteToken, process.env.KOMBAI_INVITE_TOKEN, process.env.INVITE_TOKEN) || undefined,
+    authUrl: firstNonEmpty(body.authUrl, process.env.KOMBAI_AUTH_URL) || undefined,
+    pollTimeoutMs,
+    ...(onProgress ? { onProgress } : {}),
+  };
+}
+
 async function runCollectWithPool(body, directApiKey, requestId) {
   const attempts = accountPool.accountAttempts(directApiKey);
   if (attempts.length === 0) {
@@ -378,16 +398,16 @@ function adminHtml() {
           <input id="autoEmailPrefix" placeholder="kombai" value="kombai">
         </div>
         <div class="col-3">
-          <label>Turnstile Token（可选）</label>
-          <input id="autoTurnstileToken" placeholder="留空则不使用">
+          <label>Turnstile Token</label>
+          <input id="autoTurnstileToken" placeholder="留空使用 TURNSTILE_TOKEN">
         </div>
         <div class="col-3">
           <label>注册数量</label>
           <input id="autoFillCount" type="number" min="1" max="20" placeholder="默认填充到目标数">
         </div>
         <div class="col-3 row" style="align-items:end">
-          <button onclick="autoRegisterOne()">注册一个</button>
-          <button class="secondary" onclick="autoFillPool()">填充号池</button>
+          <button onclick="autoRegisterOne(this)">注册一个</button>
+          <button class="secondary" onclick="autoFillPool(this)">填充号池</button>
         </div>
       </div>
       <div id="autoRegStatus" style="margin-top:12px"></div>
@@ -538,8 +558,7 @@ function adminHtml() {
       el.innerHTML = '<span class="' + (cls || 'muted') + '">' + esc(text) + '</span>';
     }
 
-    async function autoRegisterOne() {
-      const btn = event.target;
+    async function autoRegisterOne(btn) {
       btn.disabled = true;
       setAutoRegStatus('正在自动注册，请稍候（约1-2分钟）...', 'muted');
       try {
@@ -563,8 +582,7 @@ function adminHtml() {
       }
     }
 
-    async function autoFillPool() {
-      const btn = event.target;
+    async function autoFillPool(btn) {
       const countVal = document.getElementById('autoFillCount').value;
       const count = countVal ? Number(countVal) : undefined;
       btn.disabled = true;
@@ -581,7 +599,8 @@ function adminHtml() {
         if (data.results) {
           const ok = data.results.filter(function(r) { return r.success; }).length;
           const fail = data.results.filter(function(r) { return !r.success; }).length;
-          setAutoRegStatus('填充完成：成功 ' + ok + ' 个，失败 ' + fail + ' 个。', ok > 0 ? 'ok' : 'warn');
+          const firstError = data.results.find(function(r) { return !r.success && r.error; });
+          setAutoRegStatus('填充完成：成功 ' + ok + ' 个，失败 ' + fail + ' 个。' + (firstError ? ' 首个错误: ' + firstError.error : ''), ok > 0 ? 'ok' : 'warn');
         } else {
           setAutoRegStatus('填充完成: ' + esc(JSON.stringify(data)), 'ok');
         }

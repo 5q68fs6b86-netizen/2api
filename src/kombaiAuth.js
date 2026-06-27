@@ -19,6 +19,14 @@ function normalizeAuthUrl(authUrl = DEFAULT_KOMBAI_AUTH_URL) {
   return String(authUrl).replace(/\/+$/, '');
 }
 
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
 function authHeaders(jar, referer, authUrl = DEFAULT_KOMBAI_AUTH_URL) {
   const baseUrl = normalizeAuthUrl(authUrl);
   const cookie = jar.header();
@@ -70,13 +78,18 @@ async function signup(email, password, options = {}) {
       : await getSignupConfig({ jar, authUrl });
   const pageConfig = config.pageConfig;
   const turnstileSiteKey = pageConfig ? pageConfig.turnstile_site_key : null;
+  const turnstileToken = firstNonEmpty(options.turnstileToken, process.env.TURNSTILE_TOKEN);
+  const inviteToken = firstNonEmpty(options.inviteToken, process.env.KOMBAI_INVITE_TOKEN, process.env.INVITE_TOKEN);
 
-  if (turnstileSiteKey && !options.turnstileToken) {
+  if (turnstileSiteKey && !turnstileToken) {
     return {
       success: false,
       status: 0,
       errorType: 'turnstile_required',
-      error: { message: '注册页需要 Turnstile token', siteKey: turnstileSiteKey },
+      error: {
+        message: '注册页需要 Turnstile token；请在请求中传 turnstileToken，或设置 TURNSTILE_TOKEN 环境变量',
+        siteKey: turnstileSiteKey,
+      },
       jar,
       pageConfig,
     };
@@ -85,8 +98,8 @@ async function signup(email, password, options = {}) {
   const body = {
     email,
     password,
-    ...(options.turnstileToken ? { turnstile_token: options.turnstileToken } : {}),
-    ...(options.inviteToken ? { invite_token: options.inviteToken } : {}),
+    ...(turnstileToken ? { turnstile_token: turnstileToken } : {}),
+    ...(inviteToken ? { invite_token: inviteToken } : {}),
   };
 
   const resp = await request(`${authUrl}/api/fe/v2/signup`, {
@@ -131,8 +144,10 @@ async function registerAccount(options = {}) {
   const jar = new CookieJar();
   const config = options.skipConfig ? { pageConfig: null } : await getSignupConfig({ jar, authUrl });
   const turnstileSiteKey = config.pageConfig ? config.pageConfig.turnstile_site_key : null;
+  const turnstileToken = firstNonEmpty(options.turnstileToken, process.env.TURNSTILE_TOKEN);
+  const inviteToken = firstNonEmpty(options.inviteToken, process.env.KOMBAI_INVITE_TOKEN, process.env.INVITE_TOKEN);
 
-  if (turnstileSiteKey && !options.turnstileToken) {
+  if (turnstileSiteKey && !turnstileToken) {
     return {
       success: false,
       authUrl,
@@ -143,7 +158,10 @@ async function registerAccount(options = {}) {
         success: false,
         status: 0,
         errorType: 'turnstile_required',
-        error: { message: '注册页需要 Turnstile token', siteKey: turnstileSiteKey },
+        error: {
+          message: '注册页需要 Turnstile token；请在请求中传 turnstileToken，或设置 TURNSTILE_TOKEN 环境变量',
+          siteKey: turnstileSiteKey,
+        },
         requiresTurnstile: true,
       },
       verification: null,
@@ -162,8 +180,8 @@ async function registerAccount(options = {}) {
     authUrl,
     pageConfig: config.pageConfig,
     skipConfig: options.skipConfig,
-    turnstileToken: options.turnstileToken,
-    inviteToken: options.inviteToken,
+    turnstileToken,
+    inviteToken,
   });
 
   let verification = null;

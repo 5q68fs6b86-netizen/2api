@@ -26,6 +26,36 @@ const DEFAULT_USER_AGENT =
   process.env.USER_AGENT ||
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
+const DEFAULT_CHROMIUM_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+];
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function browserLaunchOptions() {
+  const extraArgs = String(process.env.PLAYWRIGHT_CHROMIUM_ARGS || '')
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return {
+    headless: process.env.PLAYWRIGHT_HEADLESS !== 'false',
+    args: [...DEFAULT_CHROMIUM_ARGS, ...extraArgs],
+  };
+}
+
+async function launchChromium() {
+  return chromium.launch(browserLaunchOptions());
+}
+
 function extractApiKeyToken(data) {
   if (!data || typeof data !== 'object') return '';
   return (
@@ -42,7 +72,7 @@ function extractApiKeyToken(data) {
  * 如果验证后重定向到已登录页面，返回成功
  */
 async function visitVerificationLink(verifyUrl, cookies = {}) {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   const context = await browser.newContext({ userAgent: DEFAULT_USER_AGENT });
   const page = await context.newPage();
 
@@ -93,7 +123,7 @@ async function visitVerificationLink(verifyUrl, cookies = {}) {
  * 策略：通过 API 在正确域名登录，获取 cookies 后访问 connect URL
  */
 async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {}) {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   const context = await browser.newContext({ userAgent: DEFAULT_USER_AGENT });
   const page = await context.newPage();
 
@@ -379,8 +409,11 @@ function groupCookiesByDomain(cookies, url) {
  * 8. 验证 API key
  */
 async function autoRegisterAccount(options = {}) {
-  const authUrl = normalizeAuthUrl(options.authUrl);
-  const emailPrefix = options.emailPrefix || 'kombai';
+  const authUrl = normalizeAuthUrl(firstNonEmpty(options.authUrl, process.env.KOMBAI_AUTH_URL, DEFAULT_KOMBAI_AUTH_URL));
+  const emailPrefix = firstNonEmpty(options.emailPrefix, process.env.AUTO_EMAIL_PREFIX, 'kombai');
+  const turnstileToken = firstNonEmpty(options.turnstileToken, process.env.TURNSTILE_TOKEN);
+  const inviteToken = firstNonEmpty(options.inviteToken, process.env.KOMBAI_INVITE_TOKEN, process.env.INVITE_TOKEN);
+  const pollTimeoutMs = Number(firstNonEmpty(options.pollTimeoutMs, process.env.KOMBAI_AUTH_TIMEOUT_MS, 120000)) || 120000;
   const tempMailOptions = options.tempMail || {};
   const onProgress = options.onProgress || (() => {});
 
@@ -420,8 +453,8 @@ async function autoRegisterAccount(options = {}) {
       jar,
       authUrl,
       pageConfig,
-      turnstileToken: options.turnstileToken,
-      inviteToken: options.inviteToken,
+      turnstileToken,
+      inviteToken,
     });
     onProgress({ step: 'signup', status: 'done', userId: signupResult.userId });
   } catch (error) {
@@ -525,7 +558,7 @@ async function autoRegisterAccount(options = {}) {
   let apiKey = '';
   try {
     const pollResult = await pollAuthCode(connectAuth.code, {
-      timeoutMs: options.pollTimeoutMs || 120000,
+      timeoutMs: pollTimeoutMs,
       intervalMs: 3000,
     });
     apiKey = extractApiKeyToken(pollResult);
@@ -569,6 +602,7 @@ async function autoRegisterAccount(options = {}) {
 
 module.exports = {
   autoRegisterAccount,
+  browserLaunchOptions,
   completeVscodeConnect,
   extractApiKeyToken,
   visitVerificationLink,
