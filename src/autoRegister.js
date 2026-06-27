@@ -120,19 +120,42 @@ async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {})
     if (url.includes('login') || url.includes('signup')) {
       // 先检查是否在 signup 页面，需要切换到 login
       if (url.includes('signup')) {
-        const switchToLoginSelectors = [
-          'button:has-text("Already have an account?")',
+        // 列出所有可见按钮用于调试
+        const allButtons = await page.locator('button:visible, a:visible').all();
+        for (const btn of allButtons) {
+          const text = await btn.textContent().catch(() => '');
+          if (text.trim()) console.log('[auto-register] visible element:', text.trim().substring(0, 80));
+        }
+
+        // 尝试多种方式切换到登录
+        const switchSelectors = [
           'text=Already have an account?',
+          'text=Log in',
+          'a[href*="login"]',
+          'button:has-text("Log in")',
         ];
-        for (const sel of switchToLoginSelectors) {
-          const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
-            await el.click();
-            await page.waitForTimeout(3000);
-            url = page.url();
-            console.log('[auto-register] browser_connect switched to login, url:', url);
-            break;
-          }
+        let switched = false;
+        for (const sel of switchSelectors) {
+          try {
+            const el = page.locator(sel).first();
+            if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
+              console.log('[auto-register] clicking switch:', sel);
+              await el.click();
+              await page.waitForTimeout(3000);
+              url = page.url();
+              console.log('[auto-register] after switch url:', url);
+              switched = true;
+              break;
+            }
+          } catch {}
+        }
+        if (!switched) {
+          // 直接导航到 login 页面
+          const loginUrl = url.replace('/signup', '/login');
+          console.log('[auto-register] navigating to login:', loginUrl);
+          await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+          await page.waitForTimeout(3000);
+          url = page.url();
         }
       }
 
