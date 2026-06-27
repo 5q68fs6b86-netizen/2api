@@ -29,7 +29,7 @@ function solveTurnstile(url, options = {}) {
 
     const child = spawn('python3', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, DISPLAY: process.env.DISPLAY || ':99' },
+      env: { ...process.env },
     });
 
     const timer = setTimeout(() => {
