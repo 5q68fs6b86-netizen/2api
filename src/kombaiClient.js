@@ -79,7 +79,11 @@ function normalizeSocketFrame(data) {
 
 function stringifyToolArguments(input) {
   if (input === undefined || input === null) return '{}';
-  if (typeof input === 'string') return input;
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) return input;
+    return JSON.stringify({ value: input });
+  }
   try {
     return JSON.stringify(input);
   } catch (_) {
