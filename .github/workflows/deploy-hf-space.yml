@@ -78,7 +78,7 @@ jobs:
           cat > README.md <<'EOF'
           ---
           title: 2api
-          emoji: "2"
+          emoji: "💩"
           colorFrom: blue
           colorTo: gray
           sdk: docker
