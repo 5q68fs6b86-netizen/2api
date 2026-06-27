@@ -115,9 +115,11 @@ async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {})
     await page.waitForTimeout(3000);
 
     let url = page.url();
+    console.log('[auto-register] browser_connect page url:', url);
 
     // 如果被重定向到登录/注册页面，自动填写表单
     if ((url.includes('login') || url.includes('signup')) && credentials.email && credentials.password) {
+      console.log('[auto-register] browser_connect attempting login with:', credentials.email);
       try {
         // 如果在 signup 页面，先切换到 login
         const loginLink = page.locator('a:has-text("Log in"), a:has-text("Login"), a:has-text("Sign in")').first();
@@ -126,23 +128,74 @@ async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {})
           await page.waitForTimeout(2000);
         }
 
-        // 填写登录表单
-        const emailInput = page.locator('input[type="email"]:visible, input[name="email"]:visible, input[placeholder*="email" i]:visible').first();
-        const passwordInput = page.locator('input[type="password"]:visible').first();
+        // 等待表单加载
+        await page.waitForTimeout(1000);
 
-        if (await emailInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+        // 尝试多种选择器
+        const emailSelectors = [
+          'input[type="email"]:visible',
+          'input[name="email"]:visible',
+          'input[placeholder*="email" i]:visible',
+          'input[autocomplete="email"]:visible',
+          'input[id*="email" i]:visible',
+        ];
+        const passwordSelectors = [
+          'input[type="password"]:visible',
+          'input[name="password"]:visible',
+          'input[autocomplete="current-password"]:visible',
+        ];
+
+        let emailInput = null;
+        let passwordInput = null;
+
+        for (const sel of emailSelectors) {
+          const el = page.locator(sel).first();
+          if (await el.isVisible({ timeout: 500 }).catch(() => false)) {
+            emailInput = el;
+            console.log('[auto-register] browser_connect found email input:', sel);
+            break;
+          }
+        }
+
+        for (const sel of passwordSelectors) {
+          const el = page.locator(sel).first();
+          if (await el.isVisible({ timeout: 500 }).catch(() => false)) {
+            passwordInput = el;
+            console.log('[auto-register] browser_connect found password input:', sel);
+            break;
+          }
+        }
+
+        if (emailInput && passwordInput) {
           await emailInput.fill(credentials.email);
           await passwordInput.fill(credentials.password);
 
           // 点击登录按钮
-          const loginBtn = page.locator('button:has-text("Log in"), button:has-text("Login"), button:has-text("Sign in"), button[type="submit"]').first();
-          await loginBtn.click();
-          await page.waitForTimeout(5000);
+          const loginBtnSelectors = [
+            'button:has-text("Log in")',
+            'button:has-text("Login")',
+            'button:has-text("Sign in")',
+            'button[type="submit"]',
+            'input[type="submit"]',
+          ];
 
+          for (const sel of loginBtnSelectors) {
+            const btn = page.locator(sel).first();
+            if (await btn.isVisible({ timeout: 500 }).catch(() => false)) {
+              console.log('[auto-register] browser_connect clicking login button:', sel);
+              await btn.click();
+              break;
+            }
+          }
+
+          await page.waitForTimeout(8000);
           url = page.url();
+          console.log('[auto-register] browser_connect after login url:', url);
+        } else {
+          console.log('[auto-register] browser_connect could not find login form inputs');
         }
       } catch (loginError) {
-        // 登录失败不中断流程
+        console.error('[auto-register] browser_connect login error:', loginError.message);
       }
     }
 
@@ -152,7 +205,7 @@ async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {})
     const text = await page.textContent('body').catch(() => '');
 
     return {
-      success: !url.includes('signup') && !url.includes('error'),
+      success: !url.includes('signup') && !url.includes('login') && !url.includes('error'),
       url,
       pageText: (text || '').substring(0, 500),
     };
