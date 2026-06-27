@@ -6,7 +6,10 @@
     "register": "node scripts/register.js"
   },
   "dependencies": {
+    "http-proxy-agent": "^9.1.0",
+    "https-proxy-agent": "^9.1.0",
     "playwright": "^1.61.1",
+    "socks-proxy-agent": "^10.1.0",
     "ws": "^8.21.0"
   }
 }
