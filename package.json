@@ -1,4 +1,8 @@
 {
+  "scripts": {
+    "start": "node server.js",
+    "register": "node scripts/register.js"
+  },
   "dependencies": {
     "playwright": "^1.61.1"
   }
