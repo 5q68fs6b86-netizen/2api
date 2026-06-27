@@ -339,7 +339,7 @@ class AccountPool {
     }
 
     const accounts = this.allAccounts({ includeSecrets: true }).filter((account) => account.enabled !== false);
-    return accounts.sort(() => Math.random() - 0.5).map((account) => ({
+    return accounts.map((account) => ({
       source: account.source || 'stored',
       accountId: account.id,
       label: account.label || maskSecret(account.apiKey),

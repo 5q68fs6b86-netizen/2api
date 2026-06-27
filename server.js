@@ -588,7 +588,12 @@ async function handleAdminApi(req, res, url) {
   }
 
   if (req.method === 'POST' && url.pathname === '/admin/api/proxies') {
-    sendJson(res, 200, accountPool.addProxy({ uri: body.uri || body.proxy, label: body.label, region: body.region }));
+    sendJson(res, 200, accountPool.addProxy({
+      uri: body.uri || body.proxy,
+      label: body.label,
+      region: body.region,
+      enabled: body.enabled,
+    }));
     return;
   }
 
