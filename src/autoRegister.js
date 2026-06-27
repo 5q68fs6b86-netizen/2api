@@ -90,15 +90,40 @@ async function visitVerificationLink(verifyUrl, cookies = {}) {
 
 /**
  * 用 Playwright 浏览器完成 vscode-connect 授权
- * 如果被重定向到登录页面，自动填写邮箱密码登录
+ * 策略：用浏览器访问 connect URL，同时监听网络请求，
+ * 找到授权 API 端点后直接用 HTTP API 完成授权
  */
 async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {}) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ userAgent: DEFAULT_USER_AGENT });
   const page = await context.newPage();
 
+  // 收集所有网络请求以发现授权 API
+  const apiRequests = [];
+  page.on('request', (request) => {
+    const url = request.url();
+    if (url.includes('/api/') || url.includes('/auth') || url.includes('/connect')) {
+      apiRequests.push({
+        method: request.method(),
+        url,
+        headers: request.headers(),
+        postData: request.postData(),
+      });
+    }
+  });
+
+  page.on('response', async (response) => {
+    const url = response.url();
+    if (url.includes('/api/') || url.includes('/auth') || url.includes('/connect')) {
+      try {
+        const body = await response.text();
+        console.log(`[auto-register] API response: ${response.status()} ${url} => ${body.substring(0, 200)}`);
+      } catch {}
+    }
+  });
+
   try {
-    // 设置已有的 auth cookies（可能跨域不生效，但先试试）
+    // 设置 cookies 到所有相关域名
     for (const [domain, domainCookies] of Object.entries(groupCookiesByDomain(cookies, connectUrl))) {
       const cookieList = Object.entries(domainCookies).map(([name, value]) => ({
         name,
@@ -111,108 +136,172 @@ async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {})
       }
     }
 
-    await page.goto(connectUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(3000);
-
-    let url = page.url();
-    console.log('[auto-register] browser_connect page url:', url);
-
-    // 如果被重定向到登录/注册页面，自动填写表单
-    if ((url.includes('login') || url.includes('signup')) && credentials.email && credentials.password) {
-      console.log('[auto-register] browser_connect attempting login with:', credentials.email);
-      try {
-        // 如果在 signup 页面，先切换到 login
-        const loginLink = page.locator('a:has-text("Log in"), a:has-text("Login"), a:has-text("Sign in")').first();
-        if (await loginLink.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await loginLink.click();
-          await page.waitForTimeout(2000);
+    // 同时也为 auth.kombai.com 设置 cookies
+    if (credentials.cookies) {
+      for (const [domain, domainCookies] of Object.entries(groupCookiesByDomain(credentials.cookies, 'https://auth.kombai.com'))) {
+        const cookieList = Object.entries(domainCookies).map(([name, value]) => ({
+          name,
+          value: String(value),
+          domain,
+          path: '/',
+        }));
+        if (cookieList.length > 0) {
+          await context.addCookies(cookieList);
         }
-
-        // 等待表单加载
-        await page.waitForTimeout(1000);
-
-        // 尝试多种选择器
-        const emailSelectors = [
-          'input[type="email"]:visible',
-          'input[name="email"]:visible',
-          'input[placeholder*="email" i]:visible',
-          'input[autocomplete="email"]:visible',
-          'input[id*="email" i]:visible',
-        ];
-        const passwordSelectors = [
-          'input[type="password"]:visible',
-          'input[name="password"]:visible',
-          'input[autocomplete="current-password"]:visible',
-        ];
-
-        let emailInput = null;
-        let passwordInput = null;
-
-        for (const sel of emailSelectors) {
-          const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 500 }).catch(() => false)) {
-            emailInput = el;
-            console.log('[auto-register] browser_connect found email input:', sel);
-            break;
-          }
-        }
-
-        for (const sel of passwordSelectors) {
-          const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 500 }).catch(() => false)) {
-            passwordInput = el;
-            console.log('[auto-register] browser_connect found password input:', sel);
-            break;
-          }
-        }
-
-        if (emailInput && passwordInput) {
-          await emailInput.fill(credentials.email);
-          await passwordInput.fill(credentials.password);
-
-          // 点击登录按钮
-          const loginBtnSelectors = [
-            'button:has-text("Log in")',
-            'button:has-text("Login")',
-            'button:has-text("Sign in")',
-            'button[type="submit"]',
-            'input[type="submit"]',
-          ];
-
-          for (const sel of loginBtnSelectors) {
-            const btn = page.locator(sel).first();
-            if (await btn.isVisible({ timeout: 500 }).catch(() => false)) {
-              console.log('[auto-register] browser_connect clicking login button:', sel);
-              await btn.click();
-              break;
-            }
-          }
-
-          await page.waitForTimeout(8000);
-          url = page.url();
-          console.log('[auto-register] browser_connect after login url:', url);
-        } else {
-          console.log('[auto-register] browser_connect could not find login form inputs');
-        }
-      } catch (loginError) {
-        console.error('[auto-register] browser_connect login error:', loginError.message);
       }
     }
 
-    // 等待可能的重定向
+    await page.goto(connectUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(5000);
+
+    let url = page.url();
+    console.log('[auto-register] browser_connect initial url:', url);
+
+    // 如果被重定向到登录页面，尝试通过 API 登录
+    if (url.includes('login') || url.includes('signup')) {
+      // 先尝试用 HTTP API 登录获取 session cookies
+      const loginResult = await httpLogin(credentials.email, credentials.password, credentials.authUrl);
+      if (loginResult.cookies) {
+        for (const [domain, domainCookies] of Object.entries(groupCookiesByDomain(loginResult.cookies, url))) {
+          const cookieList = Object.entries(domainCookies).map(([name, value]) => ({
+            name,
+            value: String(value),
+            domain,
+            path: '/',
+          }));
+          if (cookieList.length > 0) {
+            await context.addCookies(cookieList);
+          }
+        }
+      }
+
+      // 重新访问 connect URL
+      await page.goto(connectUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(5000);
+      url = page.url();
+      console.log('[auto-register] browser_connect after API login, url:', url);
+
+      // 如果还是在登录页面，尝试浏览器表单登录
+      if (url.includes('login') || url.includes('signup')) {
+        await browserFormLogin(page, credentials);
+        await page.waitForTimeout(5000);
+        url = page.url();
+        console.log('[auto-register] browser_connect after form login, url:', url);
+      }
+    }
+
+    // 等待可能的重定向和 API 调用完成
     await page.waitForTimeout(5000);
     url = page.url();
     const text = await page.textContent('body').catch(() => '');
+
+    console.log('[auto-register] browser_connect final url:', url);
+    console.log('[auto-register] browser_connect API requests:', JSON.stringify(apiRequests.map(r => ({ method: r.method, url: r.url })), null, 2));
 
     return {
       success: !url.includes('signup') && !url.includes('login') && !url.includes('error'),
       url,
       pageText: (text || '').substring(0, 500),
+      apiRequests: apiRequests.map(r => ({ method: r.method, url: r.url })),
     };
   } catch (error) {
     return { success: false, error: error.message };
   } finally {
     await browser.close();
+  }
+}
+
+/**
+ * 通过 HTTP API 登录并返回 cookies
+ */
+async function httpLogin(email, password, authUrl) {
+  const { request, CookieJar } = require('./httpClient');
+  const jar = new CookieJar();
+  const normalizedUrl = normalizeAuthUrl(authUrl);
+
+  try {
+    const resp = await request(`${normalizedUrl}/api/fe/v1/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': DEFAULT_USER_AGENT,
+      },
+      body: { email, password },
+    });
+    jar.addFromHeaders(resp.headers['set-cookie']);
+
+    return {
+      success: resp.status === 200,
+      cookies: jar.toJSON(),
+      status: resp.status,
+      data: resp.data,
+    };
+  } catch (error) {
+    return { success: false, error: error.message, cookies: {} };
+  }
+}
+
+/**
+ * 浏览器表单登录
+ */
+async function browserFormLogin(page, credentials) {
+  try {
+    // 尝试多种方式找到并填写登录表单
+    const emailSelectors = [
+      'input[type="email"]:visible',
+      'input[name="email"]:visible',
+      'input[placeholder*="email" i]:visible',
+      'input[autocomplete="email"]:visible',
+      'input[id*="email" i]:visible',
+    ];
+    const passwordSelectors = [
+      'input[type="password"]:visible',
+      'input[name="password"]:visible',
+      'input[autocomplete="current-password"]:visible',
+    ];
+
+    let emailInput = null;
+    let passwordInput = null;
+
+    for (const sel of emailSelectors) {
+      const el = page.locator(sel).first();
+      if (await el.isVisible({ timeout: 500 }).catch(() => false)) {
+        emailInput = el;
+        break;
+      }
+    }
+
+    for (const sel of passwordSelectors) {
+      const el = page.locator(sel).first();
+      if (await el.isVisible({ timeout: 500 }).catch(() => false)) {
+        passwordInput = el;
+        break;
+      }
+    }
+
+    if (emailInput && passwordInput && credentials.email && credentials.password) {
+      await emailInput.fill(credentials.email);
+      await passwordInput.fill(credentials.password);
+
+      const loginBtnSelectors = [
+        'button:has-text("Log in")',
+        'button:has-text("Login")',
+        'button:has-text("Sign in")',
+        'button[type="submit"]',
+      ];
+
+      for (const sel of loginBtnSelectors) {
+        const btn = page.locator(sel).first();
+        if (await btn.isVisible({ timeout: 500 }).catch(() => false)) {
+          await btn.click();
+          break;
+        }
+      }
+
+      await page.waitForTimeout(5000);
+    }
+  } catch (error) {
+    console.error('[auto-register] browserFormLogin error:', error.message);
   }
 }
 
