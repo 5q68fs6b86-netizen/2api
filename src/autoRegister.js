@@ -90,98 +90,64 @@ async function visitVerificationLink(verifyUrl, cookies = {}) {
 
 /**
  * 用 Playwright 浏览器完成 vscode-connect 授权
- * 策略：用浏览器访问 connect URL，同时监听网络请求，
- * 找到授权 API 端点后直接用 HTTP API 完成授权
+ * 策略：通过 API 在正确域名登录，获取 cookies 后访问 connect URL
  */
 async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {}) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ userAgent: DEFAULT_USER_AGENT });
   const page = await context.newPage();
 
-  // 收集所有网络请求以发现授权 API
-  const apiRequests = [];
-  page.on('request', (request) => {
-    const url = request.url();
-    if (url.includes('/api/') || url.includes('/auth') || url.includes('/connect')) {
-      apiRequests.push({
-        method: request.method(),
-        url,
-        headers: request.headers(),
-        postData: request.postData(),
-      });
-    }
-  });
-
+  // 收集关键 API 响应（忽略静态资源）
   page.on('response', async (response) => {
     const url = response.url();
-    if (url.includes('/api/') || url.includes('/auth') || url.includes('/connect')) {
+    if (url.includes('/api/') && !url.includes('sentry') && !url.includes('facebook') && !url.includes('aplo-evnt') && !url.includes('_next/static')) {
       try {
         const body = await response.text();
-        console.log(`[auto-register] API response: ${response.status()} ${url} => ${body.substring(0, 200)}`);
+        console.log(`[auto-register] API: ${response.status()} ${url} => ${body.substring(0, 300)}`);
       } catch {}
     }
   });
 
   try {
-    // 设置 cookies 到所有相关域名
-    for (const [domain, domainCookies] of Object.entries(groupCookiesByDomain(cookies, connectUrl))) {
-      const cookieList = Object.entries(domainCookies).map(([name, value]) => ({
-        name,
-        value: String(value),
-        domain,
-        path: '/',
-      }));
-      if (cookieList.length > 0) {
-        await context.addCookies(cookieList);
-      }
-    }
-
-    // 同时也为 auth.kombai.com 设置 cookies
-    if (credentials.cookies) {
-      for (const [domain, domainCookies] of Object.entries(groupCookiesByDomain(credentials.cookies, 'https://auth.kombai.com'))) {
-        const cookieList = Object.entries(domainCookies).map(([name, value]) => ({
-          name,
-          value: String(value),
-          domain,
-          path: '/',
-        }));
-        if (cookieList.length > 0) {
-          await context.addCookies(cookieList);
-        }
-      }
-    }
-
+    // 先访问 connect URL，看看被重定向到哪里
     await page.goto(connectUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(3000);
 
     let url = page.url();
     console.log('[auto-register] browser_connect initial url:', url);
 
-    // 如果被重定向到登录页面，尝试通过 API 登录
+    // 如果被重定向到登录页面，在该域名下通过 API 登录
     if (url.includes('login') || url.includes('signup')) {
-      // 先尝试用 HTTP API 登录获取 session cookies
-      const loginResult = await httpLogin(credentials.email, credentials.password, credentials.authUrl);
-      if (loginResult.cookies) {
-        for (const [domain, domainCookies] of Object.entries(groupCookiesByDomain(loginResult.cookies, url))) {
-          const cookieList = Object.entries(domainCookies).map(([name, value]) => ({
+      // 从当前页面 URL 提取 auth 基础 URL
+      const currentUrl = new URL(url);
+      const authBaseUrl = `${currentUrl.protocol}//${currentUrl.hostname}`;
+
+      // 尝试通过 API 登录
+      const apiLoginResult = await apiLoginOnDomain(authBaseUrl, credentials.email, credentials.password);
+      console.log('[auto-register] API login result:', JSON.stringify({
+        success: apiLoginResult.success,
+        status: apiLoginResult.status,
+      }));
+
+      if (apiLoginResult.success && apiLoginResult.cookies) {
+        // 设置登录后的 cookies
+        for (const [name, value] of Object.entries(apiLoginResult.cookies)) {
+          await context.addCookies([{
             name,
             value: String(value),
-            domain,
+            domain: currentUrl.hostname,
             path: '/',
-          }));
-          if (cookieList.length > 0) {
-            await context.addCookies(cookieList);
-          }
+          }]);
         }
+
+        // 重新访问 connect URL
+        await page.goto(connectUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(5000);
+        url = page.url();
+        console.log('[auto-register] browser_connect after API login, url:', url);
       }
 
-      // 重新访问 connect URL
-      await page.goto(connectUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForTimeout(5000);
-      url = page.url();
-      console.log('[auto-register] browser_connect after API login, url:', url);
-
-      // 如果还是在登录页面，尝试浏览器表单登录
+      // 如果 API 登录不成功或仍然在登录页，尝试浏览器表单登录
       if (url.includes('login') || url.includes('signup')) {
         await browserFormLogin(page, credentials);
         await page.waitForTimeout(5000);
@@ -195,14 +161,10 @@ async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {})
     url = page.url();
     const text = await page.textContent('body').catch(() => '');
 
-    console.log('[auto-register] browser_connect final url:', url);
-    console.log('[auto-register] browser_connect API requests:', JSON.stringify(apiRequests.map(r => ({ method: r.method, url: r.url })), null, 2));
-
     return {
       success: !url.includes('signup') && !url.includes('login') && !url.includes('error'),
       url,
       pageText: (text || '').substring(0, 500),
-      apiRequests: apiRequests.map(r => ({ method: r.method, url: r.url })),
     };
   } catch (error) {
     return { success: false, error: error.message };
@@ -212,33 +174,48 @@ async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {})
 }
 
 /**
- * 通过 HTTP API 登录并返回 cookies
+ * 在指定域名通过 API 登录
  */
-async function httpLogin(email, password, authUrl) {
+async function apiLoginOnDomain(baseUrl, email, password) {
   const { request, CookieJar } = require('./httpClient');
   const jar = new CookieJar();
-  const normalizedUrl = normalizeAuthUrl(authUrl);
 
-  try {
-    const resp = await request(`${normalizedUrl}/api/fe/v1/login`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': DEFAULT_USER_AGENT,
-      },
-      body: { email, password },
-    });
-    jar.addFromHeaders(resp.headers['set-cookie']);
+  // 尝试多种登录 API 端点
+  const endpoints = [
+    '/api/fe/v1/login',
+  ];
 
-    return {
-      success: resp.status === 200,
-      cookies: jar.toJSON(),
-      status: resp.status,
-      data: resp.data,
-    };
-  } catch (error) {
-    return { success: false, error: error.message, cookies: {} };
+  for (const endpoint of endpoints) {
+    try {
+      const resp = await request(`${baseUrl}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': '-.-',
+          'User-Agent': DEFAULT_USER_AGENT,
+          'Origin': baseUrl,
+          'Referer': `${baseUrl}/en/login`,
+        },
+        body: { email, password },
+      });
+      jar.addFromHeaders(resp.headers['set-cookie']);
+
+      console.log(`[auto-register] API login ${endpoint}: status=${resp.status}`);
+
+      if (resp.status === 200 && resp.data && (resp.data.user_id || resp.data.userId)) {
+        return {
+          success: true,
+          cookies: jar.toJSON(),
+          status: resp.status,
+          endpoint,
+        };
+      }
+    } catch (error) {
+      console.log(`[auto-register] API login ${endpoint} error: ${error.message}`);
+    }
   }
+
+  return { success: false, cookies: jar.toJSON() };
 }
 
 /**
@@ -455,10 +432,16 @@ async function autoRegisterAccount(options = {}) {
   });
 
   // Step 8: 浏览器访问 vscode-connect URL 完成授权
+  // 注意：connect URL 会被重定向到 auth.agent.kombai.com（可能不同于 auth.kombai.com）
+  // 所以需要在浏览器中自动完成登录
   onProgress({ step: 'browser_connect', status: 'running' });
   let connectResult = null;
   try {
-    connectResult = await completeVscodeConnect(connectAuth.url, cookies, { email, password });
+    connectResult = await completeVscodeConnect(connectAuth.url, cookies, {
+      email,
+      password,
+      authUrl,
+    });
     onProgress({
       step: 'browser_connect',
       status: connectResult.success ? 'done' : 'partial',
