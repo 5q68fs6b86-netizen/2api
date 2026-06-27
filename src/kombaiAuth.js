@@ -28,7 +28,7 @@ function authHeaders(jar, referer) {
 }
 
 function extractNextData(html) {
-  const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
+  const match = html.match(/<script\b(?=[^>]*\bid="__NEXT_DATA__")[^>]*>([\s\S]*?)<\/script>/);
   if (!match) return null;
   return JSON.parse(match[1]);
 }
