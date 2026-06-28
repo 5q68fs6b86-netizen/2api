@@ -244,6 +244,7 @@ def click_turnstile(sb):
 
 def solve_turnstile(url, proxy=None, timeout=60.0):
     """主求解函数"""
+    deadline = time.time() + timeout
     result = {
         "success": False,
         "token": None,
@@ -267,21 +268,24 @@ def solve_turnstile(url, proxy=None, timeout=60.0):
             use_chromium=True,
             binary_location=chrome_bin,
         ) as sb:
-            sb.uc_open_with_reconnect(url, reconnect_time=10.0)
+            sb.uc_open_with_reconnect(url, reconnect_time=min(10.0, max(3.0, timeout / 6)))
             time.sleep(5)
 
-            # 确保 Turnstile widget 已渲染
-            ensure_turnstile_rendered(sb)
-            time.sleep(3)
-
-            # 多轮尝试点击
-            for attempt in range(3):
-                if click_turnstile(sb):
+            token = None
+            attempt = 0
+            while time.time() < deadline:
+                attempt += 1
+                ensure_turnstile_rendered(sb)
+                token = extract_turnstile_token(sb, timeout=3)
+                if token:
                     break
-                time.sleep(2)
 
-            # 最终提取
-            token = extract_turnstile_token(sb, timeout=10)
+                click_turnstile(sb)
+                token = extract_turnstile_token(sb, timeout=min(10, max(1, int(deadline - time.time()))))
+                if token:
+                    break
+
+                time.sleep(min(3, max(0, deadline - time.time())))
 
             cookies_list = sb.get_cookies()
             cookies = {c["name"]: c["value"] for c in cookies_list}
@@ -295,7 +299,7 @@ def solve_turnstile(url, proxy=None, timeout=60.0):
                 result["success"] = True
                 result["token"] = token
             else:
-                result["error"] = "未能提取 Turnstile token"
+                result["error"] = f"未能提取 Turnstile token (attempts={attempt})"
 
     except Exception as e:
         result["error"] = str(e)
