@@ -18,6 +18,7 @@ const MODEL_SIZE_BY_ID = {
   'kombai-auto': 'auto',
   'kombai-opus': 'opus',
   'kombai-ultra': 'opus',
+  'claude-opus-4-8': 'opus',
   'kombai-best': 'best',
   'kombai-balanced': 'balanced',
   'kombai-lite': 'lite',
@@ -26,6 +27,7 @@ const MODEL_SIZE_BY_ID = {
 const DEFAULT_OPENAI_MODELS = [
   DEFAULT_OPENAI_MODEL_ID,
   'kombai-auto',
+  'claude-opus-4-8',
   'kombai-opus',
   'kombai-best',
   'kombai-balanced',
