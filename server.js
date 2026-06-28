@@ -160,12 +160,14 @@ function proxyForAutoRegister(body = {}) {
 
 function buildAutoRegisterOptions(body = {}, onProgress, proxy = null) {
   const pollTimeoutMs = Number(firstNonEmpty(body.pollTimeoutMs, process.env.KOMBAI_AUTH_TIMEOUT_MS, 120000)) || 120000;
+  const turnstileTimeoutMs = Number(firstNonEmpty(body.turnstileTimeoutMs, process.env.TURNSTILE_TIMEOUT_MS, 180000)) || 180000;
   return {
     emailPrefix: firstNonEmpty(body.emailPrefix, process.env.AUTO_EMAIL_PREFIX, 'kombai'),
     turnstileToken: firstNonEmpty(body.turnstileToken, process.env.TURNSTILE_TOKEN) || undefined,
     inviteToken: firstNonEmpty(body.inviteToken, process.env.KOMBAI_INVITE_TOKEN, process.env.INVITE_TOKEN) || undefined,
     authUrl: firstNonEmpty(body.authUrl, process.env.KOMBAI_AUTH_URL) || undefined,
     pollTimeoutMs,
+    turnstileTimeoutMs,
     proxy,
     footprintSeed: firstNonEmpty(body.footprintSeed) || undefined,
     ...(onProgress ? { onProgress } : {}),

@@ -299,13 +299,14 @@ class AccountPool {
 
   getState() {
     const accounts = this.allAccounts();
-    const activeAccounts = accounts.filter((account) => account.enabled).length;
+    const activeAccounts = accounts.filter((account) => account.enabled && !isKnownUnusableAccount(account)).length;
     return {
       config: this.state.config,
       storage: this.store ? this.store.status() : { type: 'file', ready: true, table: '' },
       pool: {
         desiredPoolSize: this.state.config.desiredPoolSize,
         activeAccounts,
+        unusableAccounts: accounts.filter((account) => account.enabled && isKnownUnusableAccount(account)).length,
         missingAccounts: Math.max(0, this.state.config.desiredPoolSize - activeAccounts),
         autoCreateSupported: true,
         note: '支持自动注册：使用 POST /admin/api/auto-register 自动注册一个账号，或 POST /admin/api/auto-fill 填充号池。',

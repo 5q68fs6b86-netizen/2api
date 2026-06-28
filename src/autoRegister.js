@@ -505,6 +505,7 @@ async function autoRegisterAccount(options = {}) {
   const turnstileToken = firstNonEmpty(options.turnstileToken, process.env.TURNSTILE_TOKEN);
   const inviteToken = firstNonEmpty(options.inviteToken, process.env.KOMBAI_INVITE_TOKEN, process.env.INVITE_TOKEN);
   const pollTimeoutMs = Number(firstNonEmpty(options.pollTimeoutMs, process.env.KOMBAI_AUTH_TIMEOUT_MS, 120000)) || 120000;
+  const turnstileTimeoutMs = Number(firstNonEmpty(options.turnstileTimeoutMs, process.env.TURNSTILE_TIMEOUT_MS, 180000)) || 180000;
   const tempMailOptions = options.tempMail || {};
   const onProgress = options.onProgress || (() => {});
   const proxy = firstNonEmpty(
@@ -535,7 +536,7 @@ async function autoRegisterAccount(options = {}) {
     onProgress({ step: 'turnstile_solve', status: 'running', siteKey: pageConfig.turnstile_site_key });
     console.log('[auto-register] 检测到 Turnstile 验证，自动求解中...');
     const solverResult = await solveTurnstile(`${authUrl}/en/signup`, {
-      timeoutMs: Number(process.env.TURNSTILE_TIMEOUT_MS || 90000),
+      timeoutMs: turnstileTimeoutMs,
       proxy,
     });
     if (solverResult.success && solverResult.token) {
