@@ -5,6 +5,32 @@ const os = require('os');
 const path = require('path');
 
 const EXTENSION_VERSION = '2.0.35';
+const DEFAULT_OPENAI_MODEL_ID = process.env.OPENAI_MODEL_NAME || 'kombai-chat';
+
+const MODEL_SIZE_BY_ID = {
+  auto: 'auto',
+  opus: 'opus',
+  ultra: 'opus',
+  best: 'best',
+  balanced: 'balanced',
+  lite: 'lite',
+  'kombai-chat': 'best',
+  'kombai-auto': 'auto',
+  'kombai-opus': 'opus',
+  'kombai-ultra': 'opus',
+  'kombai-best': 'best',
+  'kombai-balanced': 'balanced',
+  'kombai-lite': 'lite',
+};
+
+const DEFAULT_OPENAI_MODELS = [
+  DEFAULT_OPENAI_MODEL_ID,
+  'kombai-auto',
+  'kombai-opus',
+  'kombai-best',
+  'kombai-balanced',
+  'kombai-lite',
+];
 
 const EMPTY_CONTEXT = {
   fileContents: {},
@@ -24,11 +50,17 @@ function randomId(prefix) {
 }
 
 function toKombaiModelSize(model) {
-  const value = String(model || '').toLowerCase();
-  if (['auto', 'opus', 'ultra', 'best', 'balanced', 'lite'].includes(value)) {
-    return value === 'ultra' ? 'opus' : value;
-  }
+  const value = String(model || '').trim().toLowerCase();
+  if (MODEL_SIZE_BY_ID[value]) return MODEL_SIZE_BY_ID[value];
   return process.env.KOMBAI_MODEL_SIZE || 'best';
+}
+
+function openAIModelIds() {
+  const configured = String(process.env.OPENAI_MODEL_NAMES || '')
+    .split(/[\n,;]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return [...new Set(configured.length > 0 ? configured : DEFAULT_OPENAI_MODELS)];
 }
 
 function osSystem(platform = process.platform) {
@@ -363,9 +395,12 @@ function makeChatChunk({ id, model, delta, created = Math.floor(Date.now() / 100
 }
 
 module.exports = {
+  DEFAULT_OPENAI_MODEL_ID,
   EXTENSION_VERSION,
   buildKombaiPayload,
   makeChatChunk,
   makeChatCompletion,
+  openAIModelIds,
   randomId,
+  toKombaiModelSize,
 };

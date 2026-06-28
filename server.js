@@ -10,7 +10,13 @@ const {
   verifyApiKey,
 } = require('./src/kombaiClient');
 const { AccountPool, isRetryableAccountError } = require('./src/accountPool');
-const { makeChatChunk, makeChatCompletion, randomId } = require('./src/openaiCompat');
+const {
+  DEFAULT_OPENAI_MODEL_ID,
+  makeChatChunk,
+  makeChatCompletion,
+  openAIModelIds,
+  randomId,
+} = require('./src/openaiCompat');
 const { autoRegisterAccount, checkBrowserRuntime } = require('./src/autoRegister');
 const { DEFAULT_KOMBAI_AUTH_URL } = require('./src/kombaiAuth');
 
@@ -62,6 +68,14 @@ async function readJson(req) {
 }
 
 function getRequestApiKey(req) {
+  const upstreamApiKey = String(req.headers['x-kombai-api-key'] || req.headers['x-upstream-api-key'] || '').trim();
+  if (upstreamApiKey) return upstreamApiKey;
+
+  if (ADMIN_TOKEN) {
+    const xApiKey = String(req.headers['x-api-key'] || '').trim();
+    return xApiKey && xApiKey !== ADMIN_TOKEN ? xApiKey : '';
+  }
+
   const auth = req.headers.authorization || '';
   if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
   if (req.headers['x-api-key']) return String(req.headers['x-api-key']).trim();
@@ -101,6 +115,13 @@ function requireAdmin(req, res, url) {
 
   if (isLocalRequest(req)) return true;
   sendError(res, 403, '未设置 ADMIN_TOKEN 时，仅允许本机访问 /admin/api', 'authentication_error');
+  return false;
+}
+
+function requireProxyApi(req, res, url) {
+  if (!ADMIN_TOKEN) return true;
+  if (adminTokenFromRequest(req, url) === ADMIN_TOKEN) return true;
+  sendError(res, 401, 'admin token 无效或缺失', 'authentication_error');
   return false;
 }
 
@@ -231,7 +252,7 @@ async function buildAutoRegisterDiagnostics() {
 async function runCollectWithPool(body, directApiKey, requestId) {
   const attempts = accountPool.accountAttempts(directApiKey);
   if (attempts.length === 0) {
-    const error = new Error('号池为空。请在 /admin 添加已授权 Kombai API key，或在请求里传 Authorization: Bearer <apiKeyToken>。');
+    const error = new Error('号池为空。请在 /admin 添加已授权 Kombai API key，或在请求里传 X-Kombai-API-Key: <apiKeyToken>。');
     error.statusCode = 401;
     error.type = 'authentication_error';
     throw error;
@@ -263,7 +284,7 @@ async function runCollectWithPool(body, directApiKey, requestId) {
 async function handleChatCompletions(req, res) {
   const directApiKey = getRequestApiKey(req);
   const body = await readJson(req);
-  const model = body.model || process.env.OPENAI_MODEL_NAME || 'kombai-chat';
+  const model = body.model || DEFAULT_OPENAI_MODEL_ID;
   const id = randomId('chatcmpl');
 
   if (body.stream) {
@@ -278,7 +299,7 @@ async function handleChatCompletions(req, res) {
     if (attempts.length === 0) {
       writeSse(res, {
         error: {
-          message: '号池为空。请在 /admin 添加已授权 Kombai API key，或在请求里传 Authorization: Bearer <apiKeyToken>。',
+          message: '号池为空。请在 /admin 添加已授权 Kombai API key，或在请求里传 X-Kombai-API-Key: <apiKeyToken>。',
           type: 'authentication_error',
           code: 401,
         },
@@ -886,17 +907,19 @@ async function route(req, res) {
     return;
   }
 
+  if (url.pathname.startsWith('/v1/') && !requireProxyApi(req, res, url)) {
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/v1/models') {
     sendJson(res, 200, {
       object: 'list',
-      data: [
-        {
-          id: process.env.OPENAI_MODEL_NAME || 'kombai-chat',
-          object: 'model',
-          created: 0,
-          owned_by: 'kombai',
-        },
-      ],
+      data: openAIModelIds().map((id) => ({
+        id,
+        object: 'model',
+        created: 0,
+        owned_by: 'kombai',
+      })),
     });
     return;
   }
