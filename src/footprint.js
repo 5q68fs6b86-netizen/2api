@@ -107,6 +107,22 @@ function getClientContext(options = {}) {
   });
 }
 
+function stableHex(seed, label) {
+  return crypto.createHash('sha256').update(`${label}:${String(seed || '')}`).digest('hex');
+}
+
+function getStableFootprintOptions(seed, options = {}) {
+  const value = String(seed || '').trim();
+  if (!value) return {};
+  return {
+    machineId: options.machineId || process.env.KOMBAI_MACHINE_ID || DEFAULT_MACHINE_ID,
+    sessionPersistenceId: options.sessionPersistenceId || stableHex(value, 'session'),
+    runtimeStateId: options.runtimeStateId || stableHex(value, 'runtime'),
+    allowLocalSession: false,
+    contextOverrides: options.contextOverrides || {},
+  };
+}
+
 module.exports = {
   AES_KEY,
   DEFAULT_MACHINE_ID,
@@ -117,4 +133,5 @@ module.exports = {
   getFootprintV2,
   getLocalSessionPersistenceId,
   getRuntimeStateId,
+  getStableFootprintOptions,
 };

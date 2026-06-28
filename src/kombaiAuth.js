@@ -66,6 +66,7 @@ async function getSignupConfig(options = {}) {
   const authUrl = normalizeAuthUrl(options.authUrl);
   const resp = await request(`${authUrl}/en/signup`, {
     headers: { 'User-Agent': DEFAULT_USER_AGENT },
+    proxy: options.proxy,
   });
   jar.addFromHeaders(resp.headers['set-cookie']);
 
@@ -101,6 +102,7 @@ async function signup(email, password, options = {}) {
     console.log('[kombai-auth] 检测到 Turnstile 验证，自动求解中...');
     const solverResult = await solveTurnstile(`${authUrl}/en/signup`, {
       timeoutMs: Number(process.env.TURNSTILE_TIMEOUT_MS || 90000),
+      proxy: options.proxy,
     });
     if (solverResult.success && solverResult.token) {
       turnstileToken = solverResult.token;
@@ -131,6 +133,7 @@ async function signup(email, password, options = {}) {
     method: 'POST',
     headers: authHeaders(jar, `${authUrl}/en/signup`, authUrl),
     body,
+    proxy: options.proxy,
   });
   jar.addFromHeaders(resp.headers['set-cookie']);
 
@@ -152,6 +155,7 @@ async function login(email, password, options = {}) {
     method: 'POST',
     headers: authHeaders(jar, `${authUrl}/en/login`, authUrl),
     body: { email, password },
+    proxy: options.proxy,
   });
   jar.addFromHeaders(resp.headers['set-cookie']);
 
@@ -167,7 +171,7 @@ async function registerAccount(options = {}) {
   const password = options.password || makePassword(emailName.slice(-8));
   const authUrl = normalizeAuthUrl(options.authUrl);
   const jar = new CookieJar();
-  const config = options.skipConfig ? { pageConfig: null } : await getSignupConfig({ jar, authUrl });
+  const config = options.skipConfig ? { pageConfig: null } : await getSignupConfig({ jar, authUrl, proxy: options.proxy });
   const turnstileSiteKey = config.pageConfig ? config.pageConfig.turnstile_site_key : null;
   let turnstileToken = firstNonEmpty(options.turnstileToken, process.env.TURNSTILE_TOKEN);
   const inviteToken = firstNonEmpty(options.inviteToken, process.env.KOMBAI_INVITE_TOKEN, process.env.INVITE_TOKEN);
@@ -177,6 +181,7 @@ async function registerAccount(options = {}) {
     console.log('[kombai-auth] 检测到 Turnstile 验证，自动求解中...');
     const solverResult = await solveTurnstile(`${authUrl}/en/signup`, {
       timeoutMs: Number(process.env.TURNSTILE_TIMEOUT_MS || 90000),
+      proxy: options.proxy,
     });
     if (solverResult.success && solverResult.token) {
       turnstileToken = solverResult.token;
@@ -217,6 +222,7 @@ async function registerAccount(options = {}) {
     skipConfig: options.skipConfig,
     turnstileToken,
     inviteToken,
+    proxy: options.proxy,
   });
 
   let verification = null;
@@ -225,7 +231,7 @@ async function registerAccount(options = {}) {
   }
 
   const loginResult = signupResult.success && options.login !== false
-    ? await login(email, password, { jar, authUrl })
+    ? await login(email, password, { jar, authUrl, proxy: options.proxy })
     : null;
 
   return {

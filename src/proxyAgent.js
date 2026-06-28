@@ -22,7 +22,8 @@ function createProxyAgent(proxyUrl, targetUrl = '') {
 
   if (scheme === 'http' || scheme === 'https') {
     const targetScheme = String(targetUrl || '').split(':', 1)[0].toLowerCase();
-    return targetScheme === 'ws' ? new HttpProxyAgent(normalized) : new HttpsProxyAgent(normalized);
+    if (targetScheme === 'http' || targetScheme === 'ws') return new HttpProxyAgent(normalized);
+    return new HttpsProxyAgent(normalized);
   }
 
   throw new Error(`Unsupported proxy scheme: ${scheme}`);

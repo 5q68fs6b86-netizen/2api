@@ -5,6 +5,7 @@ const os = require('os');
 const { EXTENSION_VERSION, buildKombaiPayload, randomId } = require('./openaiCompat');
 const { getClientContext } = require('./footprint');
 const { createProxyAgent } = require('./proxyAgent');
+const { request } = require('./httpClient');
 
 const WS_URL = process.env.KOMBAI_WS_URL || 'wss://ws.assistant.app.kombai.com';
 const API_URL = process.env.KOMBAI_API_URL || 'https://api.assistant.app.kombai.com';
@@ -47,11 +48,11 @@ function restHeaders(options = {}) {
     'x-os-release': os.release(),
     ...(options.sessionId ? { 'x-session-id': options.sessionId } : {}),
     ...(options.contentType ? { 'Content-Type': options.contentType } : {}),
-    'x-client-context': getClientContext(),
+    'x-client-context': getClientContext(options.footprint || {}),
   };
 }
 
-function buildSocketMessage({ requestId, sessionId, payload }) {
+function buildSocketMessage({ requestId, sessionId, payload, footprint }) {
   const socketPayload = { ...payload };
   const message = {
     action: process.env.KOMBAI_ACTION || 'chatv2',
@@ -62,7 +63,7 @@ function buildSocketMessage({ requestId, sessionId, payload }) {
     homedir: socketPayload.homedir,
     messageType: socketPayload.messageType,
     subAction: socketPayload.subAction,
-    clientContext: getClientContext(),
+    clientContext: getClientContext(footprint || {}),
     payload: socketPayload,
   };
 
@@ -168,7 +169,12 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
   const sessionId = options.sessionId || randomSessionId();
   const timeoutMs = Number(process.env.KOMBAI_TIMEOUT_MS || options.timeoutMs || 180000);
   const payload = buildKombaiPayload(openaiBody, requestId);
-  const message = buildSocketMessage({ requestId, sessionId, payload });
+  const message = buildSocketMessage({
+    requestId,
+    sessionId,
+    payload,
+    footprint: options.footprint,
+  });
   const wsUrl = `${WS_URL}?sessionId=${encodeURIComponent(sessionId)}`;
   const proxyUrl = proxyUrlFromOptions(options);
   const wsOptions = {
@@ -310,24 +316,52 @@ async function collectChatCompletion(openaiBody, apiKey, options = {}) {
   return { text, toolCalls, toolResults };
 }
 
-async function exchangeAuthCode(code) {
+async function requestKombaiJson(url, options = {}) {
+  const proxyUrl = proxyUrlFromOptions(options);
+  if (!proxyUrl) {
+    const response = await fetch(url, {
+      method: options.method || 'GET',
+      body: options.body,
+      headers: options.headers || {},
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data.errorCode || data.error || data.message || `Kombai API request failed: HTTP ${response.status}`);
+      error.statusCode = response.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
+  }
+
+  const response = await request(url.toString(), {
+    method: options.method || 'GET',
+    headers: options.headers || {},
+    body: options.body,
+    proxy: proxyUrl,
+    timeout: options.timeout || 30000,
+  });
+  const data = response.data && typeof response.data === 'object' ? response.data : {};
+  if (response.status < 200 || response.status >= 300) {
+    const error = new Error(data.errorCode || data.error || data.message || `Kombai API request failed: HTTP ${response.status}`);
+    error.statusCode = response.status;
+    error.data = data || response.text;
+    throw error;
+  }
+  return data;
+}
+
+async function exchangeAuthCode(code, options = {}) {
   const sessionId = randomSessionId();
   const url = new URL('/auth/api-key', API_URL);
   url.searchParams.set('code', code);
   url.searchParams.set('appMode', 'Assistant');
 
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: restHeaders({ sessionId }),
+  return requestKombaiJson(url, {
+    headers: restHeaders({ sessionId, footprint: options.footprint }),
+    proxy: proxyUrlFromOptions(options),
+    timeout: options.timeout,
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data.errorCode || data.error || data.message || `Kombai auth exchange failed: HTTP ${response.status}`);
-    error.statusCode = response.status;
-    error.data = data;
-    throw error;
-  }
-  return data;
 }
 
 async function pollAuthCode(code, options = {}) {
@@ -338,7 +372,7 @@ async function pollAuthCode(code, options = {}) {
 
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      return await exchangeAuthCode(code);
+      return await exchangeAuthCode(code, options);
     } catch (error) {
       lastError = error;
       if (![401, 403, 404].includes(error.statusCode)) throw error;
@@ -351,34 +385,77 @@ async function pollAuthCode(code, options = {}) {
   throw error;
 }
 
-async function verifyApiKey(apiKey) {
+async function verifyApiKey(apiKey, options = {}) {
   const sessionId = randomSessionId();
   const url = new URL('/auth/api-key', API_URL);
   url.searchParams.set('apiKey', apiKey);
 
-  const response = await fetch(url, {
+  return requestKombaiJson(url, {
     method: 'PUT',
     body: '',
-    headers: restHeaders({ apiKey, sessionId }),
+    headers: restHeaders({ apiKey, sessionId, footprint: options.footprint }),
+    proxy: proxyUrlFromOptions(options),
+    timeout: options.timeout,
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data.errorCode || data.error || data.message || `Kombai API key verification failed: HTTP ${response.status}`);
-    error.statusCode = response.status;
-    error.data = data;
-    throw error;
-  }
-  return data;
+}
+
+async function getSubscriptionStatus(apiKey, options = {}) {
+  const sessionId = randomSessionId();
+  const url = new URL('/subscription/status-v2', API_URL);
+  url.searchParams.set('appMode', 'Assistant');
+
+  return requestKombaiJson(url, {
+    headers: restHeaders({ apiKey, sessionId, footprint: options.footprint }),
+    proxy: proxyUrlFromOptions(options),
+    timeout: options.timeout,
+  });
+}
+
+function numericField(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function assertSubscriptionUsable(status) {
+  const remainingCredits = numericField(status && status.assistantSubscriptionRemainingCredits);
+  const totalCredits = numericField(status && status.assistantSubscriptionTotalCredits);
+  const blocked = Boolean(status && status.assistantSubscriptionFootprintBlocked);
+  const blockReason = status && status.assistantSubscriptionBlockReason
+    ? String(status.assistantSubscriptionBlockReason)
+    : '';
+
+  if (!blocked && (remainingCredits === null || remainingCredits > 0)) return;
+
+  const details = [];
+  if (blocked) details.push(`footprintBlocked=true${blockReason ? ` (${blockReason})` : ''}`);
+  if (remainingCredits !== null && remainingCredits <= 0) details.push(`remainingCredits=${remainingCredits}`);
+  if (totalCredits !== null) details.push(`totalCredits=${totalCredits}`);
+
+  const error = new Error(`Kombai 账号不可用: ${details.join(', ') || '订阅不可用'}`);
+  error.statusCode = blocked ? 403 : 402;
+  error.type = 'subscription_error';
+  error.data = status;
+  throw error;
+}
+
+async function verifyUsableApiKey(apiKey, options = {}) {
+  const verification = await verifyApiKey(apiKey, options);
+  const subscription = await getSubscriptionStatus(apiKey, options);
+  assertSubscriptionUsable(subscription);
+  return { verification, subscription };
 }
 
 module.exports = {
+  assertSubscriptionUsable,
   buildAuthConnectUrl,
   collectChatCompletion,
   completeChat,
   exchangeAuthCode,
+  getSubscriptionStatus,
   pollAuthCode,
   randomSessionId,
   restHeaders,
   streamChatCompletion,
   verifyApiKey,
+  verifyUsableApiKey,
 };

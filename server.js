@@ -7,7 +7,7 @@ const {
   exchangeAuthCode,
   pollAuthCode,
   streamChatCompletion,
-  verifyApiKey,
+  verifyUsableApiKey,
 } = require('./src/kombaiClient');
 const { AccountPool, isRetryableAccountError } = require('./src/accountPool');
 const {
@@ -19,6 +19,7 @@ const {
 } = require('./src/openaiCompat');
 const { autoRegisterAccount, checkBrowserRuntime } = require('./src/autoRegister');
 const { DEFAULT_KOMBAI_AUTH_URL } = require('./src/kombaiAuth');
+const { getStableFootprintOptions } = require('./src/footprint');
 
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
@@ -94,6 +95,10 @@ function errorMessage(error) {
   return error && error.message ? error.message : String(error || 'unknown error');
 }
 
+function errorType(error, fallback = 'server_error') {
+  return error && error.type ? error.type : fallback;
+}
+
 function adminTokenFromRequest(req, url) {
   const auth = req.headers.authorization || '';
   if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
@@ -143,7 +148,17 @@ function firstNonEmpty(...values) {
   return '';
 }
 
-function buildAutoRegisterOptions(body = {}, onProgress) {
+function proxyForAutoRegister(body = {}) {
+  const directProxy = firstNonEmpty(
+    body.proxyUrl,
+    body.proxy && body.proxy.uri,
+    typeof body.proxy === 'string' ? body.proxy : '',
+  );
+  if (directProxy) return directProxy;
+  return accountPool.pickProxy();
+}
+
+function buildAutoRegisterOptions(body = {}, onProgress, proxy = null) {
   const pollTimeoutMs = Number(firstNonEmpty(body.pollTimeoutMs, process.env.KOMBAI_AUTH_TIMEOUT_MS, 120000)) || 120000;
   return {
     emailPrefix: firstNonEmpty(body.emailPrefix, process.env.AUTO_EMAIL_PREFIX, 'kombai'),
@@ -151,6 +166,8 @@ function buildAutoRegisterOptions(body = {}, onProgress) {
     inviteToken: firstNonEmpty(body.inviteToken, process.env.KOMBAI_INVITE_TOKEN, process.env.INVITE_TOKEN) || undefined,
     authUrl: firstNonEmpty(body.authUrl, process.env.KOMBAI_AUTH_URL) || undefined,
     pollTimeoutMs,
+    proxy,
+    footprintSeed: firstNonEmpty(body.footprintSeed) || undefined,
     ...(onProgress ? { onProgress } : {}),
   };
 }
@@ -172,19 +189,25 @@ async function autoFillPool(body = {}, onProgress) {
 
   const results = [];
   for (let i = 0; i < count; i += 1) {
+    const proxy = proxyForAutoRegister(body);
+    const proxyContext = proxy && typeof proxy === 'object' ? { proxy } : {};
     try {
-      const result = await autoRegisterAccount(buildAutoRegisterOptions(body, onProgress));
+      const result = await autoRegisterAccount(buildAutoRegisterOptions(body, onProgress, proxy));
       if (result.success && result.apiKey) {
         const account = accountPool.addAccount({
           apiKey: result.apiKey,
           label: `auto: ${result.email}`,
           source: 'auto-register',
+          footprintSeed: result.footprintSeed,
         });
+        if (proxyContext.proxy) accountPool.recordSuccess(proxyContext);
         results.push({ index: i, success: true, email: result.email, account });
       } else {
+        if (proxyContext.proxy) accountPool.recordFailure(proxyContext, new Error('注册流程未完成'));
         results.push({ index: i, success: false, error: '注册流程未完成' });
       }
     } catch (error) {
+      if (proxyContext.proxy) accountPool.recordFailure(proxyContext, error);
       results.push({ index: i, success: false, error: error.message });
     }
   }
@@ -265,7 +288,8 @@ async function runCollectWithPool(body, directApiKey, requestId) {
     const proxy = accountPool.pickProxy();
     const context = { ...attempt, proxy };
     try {
-      const result = await collectChatCompletion(body, attempt.apiKey, { requestId, proxy });
+      await verifyUsableApiKey(attempt.apiKey, { proxy, footprint: attempt.footprint });
+      const result = await collectChatCompletion(body, attempt.apiKey, { requestId, proxy, footprint: attempt.footprint });
       accountPool.recordSuccess(context);
       return result;
     } catch (error) {
@@ -322,7 +346,8 @@ async function handleChatCompletions(req, res) {
       let attemptEmitted = false;
 
       try {
-        for await (const event of streamChatCompletion({ ...body, model }, attempt.apiKey, { requestId: id, proxy })) {
+        await verifyUsableApiKey(attempt.apiKey, { proxy, footprint: attempt.footprint });
+        for await (const event of streamChatCompletion({ ...body, model }, attempt.apiKey, { requestId: id, proxy, footprint: attempt.footprint })) {
           if (!roleSent) {
             writeSse(res, makeChatChunk({ id, model, delta: { role: 'assistant' } }));
             roleSent = true;
@@ -369,14 +394,14 @@ async function handleChatCompletions(req, res) {
           && isRetryableAccountError(error)
           && attemptIndex < attempts.length - 1;
         if (canRetry) continue;
-        writeSse(res, { error: { message: errorMessage(error), type: 'server_error' } });
+        writeSse(res, { error: { message: errorMessage(error), type: errorType(error) } });
         res.write('data: [DONE]\n\n');
         res.end();
         return;
       }
     }
 
-    writeSse(res, { error: { message: errorMessage(lastError), type: 'server_error' } });
+    writeSse(res, { error: { message: errorMessage(lastError), type: errorType(lastError) } });
     res.write('data: [DONE]\n\n');
     res.end();
     return;
@@ -811,7 +836,9 @@ async function handleAdminApi(req, res, url) {
       return;
     }
     try {
-      const result = await verifyApiKey(account.apiKey);
+      const result = await verifyUsableApiKey(account.apiKey, {
+        footprint: getStableFootprintOptions(account.footprintSeed || account.apiKey),
+      });
       accountPool.recordSuccess({ accountId: account.id });
       sendJson(res, 200, { ok: true, result });
     } catch (error) {
@@ -842,30 +869,37 @@ async function handleAdminApi(req, res, url) {
       sendError(res, 502, '授权成功但响应里没有 apiKeyToken');
       return;
     }
+    const footprint = getStableFootprintOptions(apiKey);
+    await verifyUsableApiKey(apiKey, { footprint });
     const account = accountPool.addAccount({ apiKey, label: body.label || 'auth account' });
     sendJson(res, 200, { ok: true, account });
     return;
   }
 
   if (req.method === 'POST' && url.pathname === '/admin/api/auto-register') {
+    const proxy = proxyForAutoRegister(body);
     try {
       const result = await autoRegisterAccount(buildAutoRegisterOptions(
         body,
         (progress) => {
           console.log('[auto-register]', JSON.stringify(progress));
         },
+        proxy,
       ));
       if (result.success && result.apiKey) {
         const account = accountPool.addAccount({
           apiKey: result.apiKey,
           label: `auto: ${result.email}`,
           source: 'auto-register',
+          footprintSeed: result.footprintSeed,
         });
+        if (proxy && typeof proxy === 'object') accountPool.recordSuccess({ proxy });
         sendJson(res, 200, { ...result, account });
       } else {
         sendJson(res, 200, result);
       }
     } catch (error) {
+      if (proxy && typeof proxy === 'object') accountPool.recordFailure({ proxy }, error);
       console.error('[auto-register] Error:', error.message);
       sendJson(res, 500, { success: false, error: error.message });
     }

@@ -2,6 +2,7 @@
 
 const http = require('http');
 const https = require('https');
+const { createProxyAgent } = require('./proxyAgent');
 
 class CookieJar {
   constructor() {
@@ -53,6 +54,7 @@ async function request(url, options = {}) {
     const headers = { ...(options.headers || {}) };
     if (body && !headers['Content-Length']) headers['Content-Length'] = Buffer.byteLength(body);
 
+    const proxyUrl = options.proxy || options.proxyUrl || '';
     const req = mod.request({
       protocol: target.protocol,
       hostname: target.hostname,
@@ -61,6 +63,7 @@ async function request(url, options = {}) {
       method: options.method || 'GET',
       headers,
       timeout: options.timeout || 30000,
+      ...(proxyUrl ? { agent: createProxyAgent(proxyUrl, url) } : {}),
     }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));

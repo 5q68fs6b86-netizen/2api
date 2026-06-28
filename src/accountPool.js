@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { normalizeProxyUrl } = require('./proxyAgent');
+const { getStableFootprintOptions } = require('./footprint');
 
 const DEFAULT_POOL_SIZE = 5;
 const DEFAULT_STATE = {
@@ -81,7 +82,7 @@ function sanitizeConfig(input, current = DEFAULT_STATE.config) {
   };
 }
 
-function makeAccount({ apiKey, label = '', source = 'stored', enabled = true, id }) {
+function makeAccount({ apiKey, label = '', source = 'stored', enabled = true, id, footprintSeed = '' }) {
   const key = String(apiKey || '').trim();
   if (!key) throw new Error('apiKey 必填');
   return {
@@ -91,6 +92,7 @@ function makeAccount({ apiKey, label = '', source = 'stored', enabled = true, id
     keyHash: shortHash(key),
     enabled: enabled !== false,
     source,
+    footprintSeed: String(footprintSeed || '').trim(),
     status: 'unknown',
     createdAt: nowIso(),
     updatedAt: nowIso(),
@@ -100,6 +102,21 @@ function makeAccount({ apiKey, label = '', source = 'stored', enabled = true, id
     successCount: 0,
     failCount: 0,
   };
+}
+
+function accountFootprint(account) {
+  return getStableFootprintOptions(account.footprintSeed || account.apiKey || account.keyHash || account.id);
+}
+
+function isKnownUnusableAccount(account) {
+  if (!account || account.enabled === false) return true;
+  const message = String(account.lastError || '').toLowerCase();
+  return [
+    'footprintblocked=true',
+    'too many accounts',
+    'remainingcredits=0',
+    '账号不可用',
+  ].some((needle) => message.includes(needle));
 }
 
 function makeProxy({ uri, label = '', region = '', source = 'stored', enabled = true, id }) {
@@ -335,15 +352,19 @@ class AccountPool {
         accountId: null,
         label: 'request bearer',
         apiKey: directApiKey,
+        footprint: getStableFootprintOptions(directApiKey),
       }];
     }
 
-    const accounts = this.allAccounts({ includeSecrets: true }).filter((account) => account.enabled !== false);
+    const enabledAccounts = this.allAccounts({ includeSecrets: true }).filter((account) => account.enabled !== false);
+    const usableAccounts = enabledAccounts.filter((account) => !isKnownUnusableAccount(account));
+    const accounts = usableAccounts.length > 0 ? usableAccounts : enabledAccounts;
     return accounts.map((account) => ({
       source: account.source || 'stored',
       accountId: account.id,
       label: account.label || maskSecret(account.apiKey),
       apiKey: account.apiKey,
+      footprint: accountFootprint(account),
     }));
   }
 
@@ -432,6 +453,9 @@ function isRetryableAccountError(error) {
     'socket',
     'econn',
     'unknown error',
+    'footprintblocked',
+    'too many accounts',
+    '账号不可用',
     '403',
     '429',
   ].some((needle) => message.includes(needle));

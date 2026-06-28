@@ -19,9 +19,11 @@ const {
 const {
   buildAuthConnectUrl,
   pollAuthCode,
-  verifyApiKey,
+  verifyUsableApiKey,
 } = require('./kombaiClient');
 const { solveTurnstile } = require('./turnstileSolver');
+const { normalizeProxyUrl } = require('./proxyAgent');
+const { getStableFootprintOptions } = require('./footprint');
 
 const DEFAULT_USER_AGENT =
   process.env.USER_AGENT ||
@@ -41,20 +43,34 @@ function firstNonEmpty(...values) {
   return '';
 }
 
-function browserLaunchOptions() {
+function playwrightProxy(proxyUrl) {
+  const normalized = normalizeProxyUrl(proxyUrl);
+  if (!normalized) return null;
+  const parsed = new URL(normalized);
+  const server = `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ''}`;
+  return {
+    server,
+    ...(parsed.username ? { username: decodeURIComponent(parsed.username) } : {}),
+    ...(parsed.password ? { password: decodeURIComponent(parsed.password) } : {}),
+  };
+}
+
+function browserLaunchOptions(options = {}) {
   const extraArgs = String(process.env.PLAYWRIGHT_CHROMIUM_ARGS || '')
     .split(/\s+/)
     .map((item) => item.trim())
     .filter(Boolean);
+  const proxy = playwrightProxy(options.proxy);
 
   return {
     headless: process.env.PLAYWRIGHT_HEADLESS !== 'false',
     args: [...DEFAULT_CHROMIUM_ARGS, ...extraArgs],
+    ...(proxy ? { proxy } : {}),
   };
 }
 
-async function launchChromium() {
-  return chromium.launch(browserLaunchOptions());
+async function launchChromium(options = {}) {
+  return chromium.launch(browserLaunchOptions(options));
 }
 
 async function addCookiesForUrl(context, targetUrl, cookies = {}) {
@@ -166,8 +182,8 @@ function extractApiKeyToken(data) {
  * 用 Playwright 浏览器访问验证链接
  * 如果验证后重定向到已登录页面，返回成功
  */
-async function visitVerificationLink(verifyUrl, cookies = {}) {
-  const browser = await launchChromium();
+async function visitVerificationLink(verifyUrl, cookies = {}, options = {}) {
+  const browser = await launchChromium({ proxy: options.proxy });
   const context = await browser.newContext({ userAgent: DEFAULT_USER_AGENT });
   const page = await context.newPage();
 
@@ -217,8 +233,8 @@ async function visitVerificationLink(verifyUrl, cookies = {}) {
  * 用 Playwright 浏览器完成 vscode-connect 授权
  * 策略：通过 API 在正确域名登录，获取 cookies 后访问 connect URL
  */
-async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {}) {
-  const browser = await launchChromium();
+async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {}, options = {}) {
+  const browser = await launchChromium({ proxy: options.proxy });
   const context = await browser.newContext({ userAgent: DEFAULT_USER_AGENT });
   const page = await context.newPage();
 
@@ -266,9 +282,9 @@ async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {})
       if (url.includes('login') || url.includes('signup')) {
         const currentUrl = new URL(url);
         const authBaseUrl = `${currentUrl.protocol}//${currentUrl.hostname}`;
-        let apiLoginResult = await apiLoginOnDomain(authBaseUrl, credentials.email, credentials.password);
+        let apiLoginResult = await apiLoginOnDomain(authBaseUrl, credentials.email, credentials.password, { proxy: options.proxy });
         if (!apiLoginResult.success && credentials.authUrl && normalizeAuthUrl(credentials.authUrl) !== authBaseUrl) {
-          apiLoginResult = await apiLoginOnDomain(normalizeAuthUrl(credentials.authUrl), credentials.email, credentials.password);
+          apiLoginResult = await apiLoginOnDomain(normalizeAuthUrl(credentials.authUrl), credentials.email, credentials.password, { proxy: options.proxy });
         }
         console.log('[auto-register] API login result:', JSON.stringify({ success: apiLoginResult.success, status: apiLoginResult.status }));
 
@@ -312,7 +328,7 @@ async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {})
 /**
  * 在指定域名通过 API 登录
  */
-async function apiLoginOnDomain(baseUrl, email, password) {
+async function apiLoginOnDomain(baseUrl, email, password, options = {}) {
   const { request, CookieJar } = require('./httpClient');
   const jar = new CookieJar();
 
@@ -333,6 +349,7 @@ async function apiLoginOnDomain(baseUrl, email, password) {
           'Referer': `${baseUrl}/en/login`,
         },
         body: { email, password },
+        proxy: options.proxy,
       });
       jar.addFromHeaders(resp.headers['set-cookie']);
 
@@ -490,13 +507,21 @@ async function autoRegisterAccount(options = {}) {
   const pollTimeoutMs = Number(firstNonEmpty(options.pollTimeoutMs, process.env.KOMBAI_AUTH_TIMEOUT_MS, 120000)) || 120000;
   const tempMailOptions = options.tempMail || {};
   const onProgress = options.onProgress || (() => {});
+  const proxy = firstNonEmpty(
+    options.proxy && options.proxy.uri,
+    options.proxyUrl,
+    typeof options.proxy === 'string' ? options.proxy : '',
+    process.env.AUTO_REGISTER_PROXY,
+  );
+  const footprintSeed = firstNonEmpty(options.footprintSeed, `${emailPrefix}:${Date.now()}:${Math.random()}`);
+  const footprint = getStableFootprintOptions(footprintSeed);
 
   // Step 1: 获取注册配置
   onProgress({ step: 'signup_config', status: 'running' });
   const jar = new CookieJar();
   let pageConfig = null;
   try {
-    const config = await getSignupConfig({ jar, authUrl });
+    const config = await getSignupConfig({ jar, authUrl, proxy });
     pageConfig = config.pageConfig;
     onProgress({ step: 'signup_config', status: 'done' });
   } catch (error) {
@@ -511,6 +536,7 @@ async function autoRegisterAccount(options = {}) {
     console.log('[auto-register] 检测到 Turnstile 验证，自动求解中...');
     const solverResult = await solveTurnstile(`${authUrl}/en/signup`, {
       timeoutMs: Number(process.env.TURNSTILE_TIMEOUT_MS || 90000),
+      proxy,
     });
     if (solverResult.success && solverResult.token) {
       resolvedTurnstileToken = solverResult.token;
@@ -548,6 +574,7 @@ async function autoRegisterAccount(options = {}) {
       pageConfig,
       turnstileToken: resolvedTurnstileToken,
       inviteToken,
+      proxy,
     });
     onProgress({ step: 'signup', status: 'done', userId: signupResult.userId });
   } catch (error) {
@@ -587,7 +614,7 @@ async function autoRegisterAccount(options = {}) {
   if (verification && verification.link) {
     onProgress({ step: 'confirm_email', status: 'running' });
     try {
-      const confirmResult = await visitVerificationLink(verification.link, cookies);
+      const confirmResult = await visitVerificationLink(verification.link, cookies, { proxy });
       if (confirmResult.cookies) {
         cookies = { ...cookies, ...confirmResult.cookies };
       }
@@ -605,7 +632,7 @@ async function autoRegisterAccount(options = {}) {
   onProgress({ step: 'login', status: 'running' });
   let loginResult;
   try {
-    loginResult = await login(email, password, { jar, authUrl });
+    loginResult = await login(email, password, { jar, authUrl, proxy });
     if (loginResult.jar) {
       cookies = { ...cookies, ...loginResult.jar.toJSON() };
     }
@@ -635,7 +662,7 @@ async function autoRegisterAccount(options = {}) {
       email,
       password,
       authUrl,
-    });
+    }, { proxy });
     onProgress({
       step: 'browser_connect',
       status: connectResult.success ? 'done' : 'partial',
@@ -653,6 +680,8 @@ async function autoRegisterAccount(options = {}) {
     const pollResult = await pollAuthCode(connectAuth.code, {
       timeoutMs: pollTimeoutMs,
       intervalMs: 3000,
+      proxy,
+      footprint,
     });
     apiKey = extractApiKeyToken(pollResult);
     if (apiKey) {
@@ -671,11 +700,17 @@ async function autoRegisterAccount(options = {}) {
   // Step 10: 验证 API key
   onProgress({ step: 'verify', status: 'running' });
   try {
-    await verifyApiKey(apiKey);
+    const usable = await verifyUsableApiKey(apiKey, { proxy, footprint });
+    onProgress({
+      step: 'subscription',
+      status: 'done',
+      remainingCredits: usable.subscription.assistantSubscriptionRemainingCredits,
+      footprintBlocked: usable.subscription.assistantSubscriptionFootprintBlocked,
+    });
     onProgress({ step: 'verify', status: 'done' });
   } catch (error) {
-    onProgress({ step: 'verify', status: 'warning', error: error.message });
-    // 验证失败不阻止保存，key 可能仍然可用
+    onProgress({ step: 'verify', status: 'error', error: error.message });
+    throw error;
   }
 
   onProgress({ step: 'complete', status: 'done', apiKey });
@@ -685,6 +720,7 @@ async function autoRegisterAccount(options = {}) {
     email,
     password,
     apiKey,
+    footprintSeed,
     userId: signupResult.userId || null,
     tempEmailAddress: tempEmail.address,
     verificationLink: verification ? verification.link : null,
