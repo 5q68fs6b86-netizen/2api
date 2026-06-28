@@ -1011,7 +1011,15 @@ server.on('error', (error) => {
   throw error;
 });
 
-server.listen(PORT, () => {
-  console.log(`2api listening on http://127.0.0.1:${PORT}`);
-  scheduleStartupAutoFill();
+async function startServer() {
+  await accountPool.init();
+  server.listen(PORT, () => {
+    console.log(`2api listening on http://127.0.0.1:${PORT}`);
+    scheduleStartupAutoFill();
+  });
+}
+
+startServer().catch((error) => {
+  console.error(`启动失败: ${error.message}`);
+  process.exit(1);
 });

@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { normalizeProxyUrl } = require('./proxyAgent');
 const { getStableFootprintOptions } = require('./footprint');
+const { PostgresStateStore } = require('./postgresStateStore');
 
 const DEFAULT_POOL_SIZE = 5;
 const DEFAULT_STATE = {
@@ -82,6 +83,16 @@ function sanitizeConfig(input, current = DEFAULT_STATE.config) {
   };
 }
 
+function normalizeState(parsed = {}, fallbackConfig = DEFAULT_STATE.config) {
+  return {
+    ...DEFAULT_STATE,
+    ...parsed,
+    config: sanitizeConfig(parsed.config || {}, fallbackConfig),
+    accounts: Array.isArray(parsed.accounts) ? parsed.accounts : [],
+    proxies: Array.isArray(parsed.proxies) ? parsed.proxies : [],
+  };
+}
+
 function makeAccount({ apiKey, label = '', source = 'stored', enabled = true, id, footprintSeed = '' }) {
   const key = String(apiKey || '').trim();
   if (!key) throw new Error('apiKey 必填');
@@ -143,6 +154,7 @@ class AccountPool {
   constructor(options = {}) {
     this.dataDir = options.dataDir || process.env.DATA_DIR || path.join(process.cwd(), 'data');
     this.statePath = options.statePath || process.env.ACCOUNT_POOL_FILE || path.join(this.dataDir, 'account-pool.json');
+    this.store = options.store || new PostgresStateStore();
     this.state = this.load();
     this.proxyCursor = 0;
   }
@@ -150,13 +162,7 @@ class AccountPool {
   load() {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.statePath, 'utf8'));
-      return {
-        ...DEFAULT_STATE,
-        ...parsed,
-        config: sanitizeConfig(parsed.config || {}, DEFAULT_STATE.config),
-        accounts: Array.isArray(parsed.accounts) ? parsed.accounts : [],
-        proxies: Array.isArray(parsed.proxies) ? parsed.proxies : [],
-      };
+      return normalizeState(parsed, DEFAULT_STATE.config);
     } catch (error) {
       if (error.code !== 'ENOENT') {
         console.warn(`读取号池配置失败，将使用默认配置: ${error.message}`);
@@ -168,9 +174,35 @@ class AccountPool {
     }
   }
 
-  save() {
+  async init() {
+    if (!this.store || !this.store.enabled()) return;
+    try {
+      const stored = await this.store.load();
+      if (stored) {
+        this.state = normalizeState(stored, this.state.config);
+        this.saveLocal();
+        console.log('[account-pool] loaded state from PostgreSQL');
+        return;
+      }
+      await this.store.save(this.state);
+      console.log('[account-pool] initialized PostgreSQL state from local file');
+    } catch (error) {
+      console.error(`[account-pool] PostgreSQL storage unavailable, using local file: ${error.message}`);
+    }
+  }
+
+  saveLocal() {
     fs.mkdirSync(path.dirname(this.statePath), { recursive: true });
     fs.writeFileSync(this.statePath, JSON.stringify(this.state, null, 2));
+  }
+
+  save() {
+    this.saveLocal();
+    if (this.store && this.store.enabled()) {
+      this.store.save(this.state).catch((error) => {
+        console.error(`[account-pool] 保存 PostgreSQL 状态失败: ${error.message}`);
+      });
+    }
   }
 
   envAccounts() {
@@ -270,6 +302,7 @@ class AccountPool {
     const activeAccounts = accounts.filter((account) => account.enabled).length;
     return {
       config: this.state.config,
+      storage: this.store ? this.store.status() : { type: 'file', ready: true, table: '' },
       pool: {
         desiredPoolSize: this.state.config.desiredPoolSize,
         activeAccounts,
