@@ -42,6 +42,7 @@ const EMPTY_CONTEXT = {
   figma: {},
   terminals: [],
   excalidraw: {},
+  excalidrawEnabled: false,
   userEditedFiles: {},
 };
 
@@ -277,7 +278,66 @@ function buildCapabilities() {
   };
 }
 
-function buildKombaiPayload(openaiBody, requestId) {
+function buildMcpPayload(openaiBody) {
+  const messageContext = buildMessageContext(openaiBody.messages);
+  const toolResults = extractToolResults(openaiBody.messages);
+  const prompt = toolResults.length > 0
+    ? '{{tool_results: Tool Results}}'
+    : openaiBody.prompt || messageContext.prompt || messagesToPrompt(openaiBody.messages);
+  const workspacePath = process.env.KOMBAI_WORKSPACE_PATH || process.cwd();
+  const threadId = openaiBody.thread_id !== undefined
+    ? String(openaiBody.thread_id)
+    : openaiBody.threadId !== undefined
+      ? String(openaiBody.threadId)
+      : '';
+  const messageType = process.env.KOMBAI_MESSAGE_TYPE || 'codegen';
+
+  const payload = {
+    prompt,
+    ...(threadId ? { threadId } : {}),
+    workspacePath,
+    extensionVersion: EXTENSION_VERSION,
+    editor: process.env.KOMBAI_EDITOR || 'vscode',
+    editorVersion: process.env.KOMBAI_EDITOR_VERSION || 'unknown',
+    osPlatform: process.platform,
+    osArchitecture: process.arch,
+    osRelease: '',
+    os_system: osSystem(),
+    default_shell: process.env.SHELL || '/bin/bash',
+    techStack: {},
+    capabilities: buildCapabilities(),
+    connectedMcps: [],
+    toolResults,
+    modelSize: toKombaiModelSize(openaiBody.model),
+    thinkingEffort: openaiBody.reasoning_effort || openaiBody.thinkingEffort || 'medium',
+    messageType,
+    planningMode: process.env.KOMBAI_PLANNING_MODE || 'plan_n_chat',
+    writeToDisk: openaiBody.writeToDisk !== false,
+    userEditedFiles: {},
+    figmaToken: '',
+    tokenType: 'Public',
+    indexedComponentIds: [],
+    planTechStack: false,
+    browserInfo: [],
+    browserProfilesInfo: [],
+    browserMode: 'off',
+    terminals: [],
+    allowedAbsolutePaths: [workspacePath],
+  };
+
+  if (messageType === 'design') {
+    payload.design_settings = {
+      num_variants: 1,
+      active_canvas_path: null,
+      max_design_turns: 3,
+      active_nodes: [],
+    };
+  }
+
+  return payload;
+}
+
+function buildChatV2Payload(openaiBody, requestId) {
   const messageContext = buildMessageContext(openaiBody.messages);
   const toolResults = extractToolResults(openaiBody.messages);
   const hasMessageContext = Boolean(messageContext.prompt || Object.keys(messageContext.imageAttachments).length > 0);
@@ -285,7 +345,11 @@ function buildKombaiPayload(openaiBody, requestId) {
     ? '{{tool_results: Tool Results}}'
     : openaiBody.prompt || messageContext.prompt || messagesToPrompt(openaiBody.messages);
   const workspacePath = process.env.KOMBAI_WORKSPACE_PATH || process.cwd();
-  const threadId = openaiBody.thread_id || openaiBody.threadId || randomId('thread');
+  const threadId = openaiBody.thread_id !== undefined
+    ? String(openaiBody.thread_id)
+    : openaiBody.threadId !== undefined
+      ? String(openaiBody.threadId)
+      : '';
   const messageType = process.env.KOMBAI_MESSAGE_TYPE || 'chat';
 
   const payload = {
@@ -308,6 +372,7 @@ function buildKombaiPayload(openaiBody, requestId) {
     capabilities: buildCapabilities(),
     connectedMcps: [],
     toolResults,
+    stream: 'stream',
     userRules: '',
     repoContext: ['', ''],
     openTabs: {},
@@ -326,6 +391,7 @@ function buildKombaiPayload(openaiBody, requestId) {
     tokenType: 'Public',
     planTechStack: false,
     scrollAnimationEnabled: false,
+    messageInitiator: openaiBody.messageInitiator || 'user',
     subAction: 'self_serve_pl',
     timestamp: Date.now().toString(),
     requestId,
@@ -333,8 +399,14 @@ function buildKombaiPayload(openaiBody, requestId) {
       ? { type: 'agent/tool-result' }
       : openaiBody.editorState || (hasMessageContext ? messageContext.editorState : editorStateFromPrompt(prompt)),
     imageAttachments: messageContext.imageAttachments,
-    openaiTools: Array.isArray(openaiBody.tools) ? openaiBody.tools : [],
-    openaiToolChoice: openaiBody.tool_choice || null,
+    indexedFolderIds: [],
+    indexedPackageIds: [],
+    indexedStorybookIds: [],
+    indexFrontendMetadata: {},
+    attached_nodes: [],
+    attached_canvases: [],
+    attached_style_guides: [],
+    attached_canvas_themes: [],
   };
 
   if (messageType === 'design') {
@@ -347,6 +419,12 @@ function buildKombaiPayload(openaiBody, requestId) {
   }
 
   return payload;
+}
+
+function buildKombaiPayload(openaiBody, requestId, options = {}) {
+  const action = options.action || process.env.KOMBAI_ACTION || 'mcpv1';
+  if (action === 'mcpv1') return buildMcpPayload(openaiBody, requestId);
+  return buildChatV2Payload(openaiBody, requestId);
 }
 
 function makeChatCompletion({

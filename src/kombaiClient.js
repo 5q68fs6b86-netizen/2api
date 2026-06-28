@@ -52,23 +52,27 @@ function restHeaders(options = {}) {
   };
 }
 
-function buildSocketMessage({ requestId, sessionId, payload, footprint }) {
+function buildSocketMessage({ action, requestId, sessionId, payload, footprint }) {
   const socketPayload = { ...payload };
   const message = {
-    action: process.env.KOMBAI_ACTION || 'chatv2',
+    action,
     requestId,
     sessionId,
-    threadId: socketPayload.threadId,
-    workspacePath: socketPayload.workspacePath,
-    homedir: socketPayload.homedir,
-    messageType: socketPayload.messageType,
-    subAction: socketPayload.subAction,
+    ...(socketPayload.threadId ? { threadId: socketPayload.threadId } : {}),
+    ...(socketPayload.workspacePath ? { workspacePath: socketPayload.workspacePath } : {}),
+    ...(socketPayload.homedir ? { homedir: socketPayload.homedir } : {}),
+    ...(socketPayload.messageType ? { messageType: socketPayload.messageType } : {}),
+    ...(socketPayload.subAction ? { subAction: socketPayload.subAction } : {}),
+    ...(socketPayload.stream ? { stream: 'stream' } : {}),
+    ...(socketPayload.api ? { api: socketPayload.api } : {}),
     clientContext: getClientContext(footprint || {}),
     payload: socketPayload,
   };
 
-  delete message.payload.threadId;
-  delete message.payload.subAction;
+  if (socketPayload.threadId) delete message.payload.threadId;
+  if (socketPayload.subAction) delete message.payload.subAction;
+  delete message.payload.stream;
+  delete message.payload.api;
   return message;
 }
 
@@ -91,6 +95,44 @@ function stringifyToolArguments(input) {
   } catch (_) {
     return JSON.stringify({ value: String(input) });
   }
+}
+
+function cleanStreamText(text, state = {}) {
+  let cleaned = String(text || '')
+    .replace(/<loader\b[^>]*><\/loader>\s*/gi, '')
+    .replace(/<loaderUpdate\b[^>]*><\/loaderUpdate>\s*/gi, '')
+    .replace(/<loaderUpdate\b[^>]*>\s*/gi, '');
+
+  let output = '';
+  while (cleaned) {
+    if (state.suppressInternalMarkup) {
+      const closeMatch = cleaned.match(/<\/tool-group>/i);
+      if (!closeMatch) return output.trim() ? output : '';
+      cleaned = cleaned.slice(closeMatch.index + closeMatch[0].length);
+      state.suppressInternalMarkup = false;
+      continue;
+    }
+
+    const openMatch = cleaned.match(/<tool-group\b[^>]*>/i);
+    if (!openMatch) {
+      output += cleaned;
+      break;
+    }
+
+    output += cleaned.slice(0, openMatch.index);
+    cleaned = cleaned.slice(openMatch.index + openMatch[0].length);
+    const closeMatch = cleaned.match(/<\/tool-group>/i);
+    if (!closeMatch) {
+      state.suppressInternalMarkup = true;
+      break;
+    }
+    cleaned = cleaned.slice(closeMatch.index + closeMatch[0].length);
+  }
+
+  output = output
+    .replace(/<kombai-element-update\b[^>]*><\/kombai-element-update>\s*/gi, '')
+    .replace(/<\/?kombai-collapsible\b[^>]*>\s*/gi, '');
+  return output.trim() ? output : '';
 }
 
 function normalizeToolCall(toolUse) {
@@ -138,7 +180,7 @@ function toolCallsFromFrame(frame) {
 
   const candidates = [];
   if (frame.action === 'toolUse') {
-    candidates.push(frame.response, frame.toolUse, frame.toolUses);
+    candidates.push(frame.response, frame.toolUse, frame.toolUses, frame.tools);
   }
   candidates.push(
     frame.response && frame.response.toolUse,
@@ -168,8 +210,10 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
   const requestId = options.requestId || randomId('chatcmpl');
   const sessionId = options.sessionId || randomSessionId();
   const timeoutMs = Number(process.env.KOMBAI_TIMEOUT_MS || options.timeoutMs || 180000);
-  const payload = buildKombaiPayload(openaiBody, requestId);
+  const action = process.env.KOMBAI_ACTION || options.action || 'mcpv1';
+  const payload = buildKombaiPayload(openaiBody, requestId, { action });
   const message = buildSocketMessage({
+    action,
     requestId,
     sessionId,
     payload,
@@ -186,6 +230,7 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
   let notify = null;
   let done = false;
   let failure = null;
+  const streamCleanState = {};
 
   const ws = new WebSocket(wsUrl, wsOptions);
 
@@ -238,7 +283,19 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
     }
 
     if (frame.action === 'streamMessage' && frame.response && typeof frame.response.text === 'string') {
-      push({ type: 'text', text: frame.response.text, raw: frame });
+      const text = cleanStreamText(frame.response.text, streamCleanState);
+      if (text) push({ type: 'text', text, raw: frame });
+      return;
+    }
+
+    if (frame.action === 'agentResult' && frame.result && Array.isArray(frame.result.content)) {
+      for (const part of frame.result.content) {
+        if (part && part.type === 'text' && typeof part.text === 'string') {
+          const text = cleanStreamText(part.text, streamCleanState);
+          if (text) push({ type: 'text', text, raw: frame });
+        }
+      }
+      finish();
       return;
     }
 
