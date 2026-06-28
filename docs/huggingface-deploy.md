@@ -32,14 +32,28 @@ Space can pull from.
 
 ## Runtime Secrets
 
-Set application runtime secrets in the Hugging Face Space settings, not in git:
+Set application runtime secrets as GitHub repository secrets. The deploy
+workflow syncs non-empty values to Hugging Face Space secrets:
 
 - `ADMIN_TOKEN`
 - `KOMBAI_API_KEYS`
 - `TURNSTILE_TOKEN`
 - `KOMBAI_INVITE_TOKEN`
-- `TEMP_MAIL_API`
 - `TEMP_MAIL_ADMIN_AUTH`
+- `PROXY_LIST`
+
+Set non-secret runtime config as GitHub repository variables. The deploy
+workflow syncs non-empty values to Hugging Face Space variables:
+
+- `ACCOUNT_POOL_SIZE`
+- `AUTO_EMAIL_PREFIX`
+- `AUTO_FILL_ON_STARTUP`
+- `AUTO_FILL_STARTUP_DELAY_MS`
+- `KOMBAI_AUTH_TIMEOUT_MS`
+- `KOMBAI_AUTH_URL`
+- `KOMBAI_AUTH_CONNECT_URL`
+- `TEMP_MAIL_API`
 - `TEMP_MAIL_DOMAIN`
+- `PLAYWRIGHT_CHROMIUM_ARGS`
 
 Do not hardcode access tokens in workflow files or source code.

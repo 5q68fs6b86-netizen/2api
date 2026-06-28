@@ -104,3 +104,71 @@ jobs:
           git branch -M main
           git remote add space "https://oauth2:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_ID}"
           git push --force space main
+
+      - name: Sync Space runtime config
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_ID: ${{ secrets.HF_SPACE_ID || vars.HF_SPACE_ID }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          KOMBAI_API_KEYS: ${{ secrets.KOMBAI_API_KEYS }}
+          TURNSTILE_TOKEN: ${{ secrets.TURNSTILE_TOKEN }}
+          KOMBAI_INVITE_TOKEN: ${{ secrets.KOMBAI_INVITE_TOKEN }}
+          TEMP_MAIL_ADMIN_AUTH: ${{ secrets.TEMP_MAIL_ADMIN_AUTH }}
+          PROXY_LIST: ${{ secrets.PROXY_LIST }}
+          ACCOUNT_POOL_SIZE: ${{ vars.ACCOUNT_POOL_SIZE || '5' }}
+          AUTO_EMAIL_PREFIX: ${{ vars.AUTO_EMAIL_PREFIX || 'kombai' }}
+          AUTO_FILL_ON_STARTUP: ${{ vars.AUTO_FILL_ON_STARTUP || 'true' }}
+          AUTO_FILL_STARTUP_DELAY_MS: ${{ vars.AUTO_FILL_STARTUP_DELAY_MS || '3000' }}
+          KOMBAI_AUTH_TIMEOUT_MS: ${{ vars.KOMBAI_AUTH_TIMEOUT_MS || '120000' }}
+          KOMBAI_AUTH_URL: ${{ vars.KOMBAI_AUTH_URL }}
+          KOMBAI_AUTH_CONNECT_URL: ${{ vars.KOMBAI_AUTH_CONNECT_URL }}
+          TEMP_MAIL_API: ${{ vars.TEMP_MAIL_API }}
+          TEMP_MAIL_DOMAIN: ${{ vars.TEMP_MAIL_DOMAIN }}
+          PLAYWRIGHT_CHROMIUM_ARGS: ${{ vars.PLAYWRIGHT_CHROMIUM_ARGS }}
+        run: |
+          set -euo pipefail
+
+          python3 -m pip install --user --quiet huggingface_hub
+
+          python3 <<'PY'
+          import os
+          from huggingface_hub import HfApi
+
+          token = os.environ["HF_TOKEN"]
+          repo_id = os.environ["HF_SPACE_ID"]
+          api = HfApi(token=token)
+
+          secrets = [
+              "ADMIN_TOKEN",
+              "KOMBAI_API_KEYS",
+              "TURNSTILE_TOKEN",
+              "KOMBAI_INVITE_TOKEN",
+              "TEMP_MAIL_ADMIN_AUTH",
+              "PROXY_LIST",
+          ]
+          variables = [
+              "ACCOUNT_POOL_SIZE",
+              "AUTO_EMAIL_PREFIX",
+              "AUTO_FILL_ON_STARTUP",
+              "AUTO_FILL_STARTUP_DELAY_MS",
+              "KOMBAI_AUTH_TIMEOUT_MS",
+              "KOMBAI_AUTH_URL",
+              "KOMBAI_AUTH_CONNECT_URL",
+              "TEMP_MAIL_API",
+              "TEMP_MAIL_DOMAIN",
+              "PLAYWRIGHT_CHROMIUM_ARGS",
+          ]
+
+          for key in secrets:
+              value = os.environ.get(key, "")
+              if value:
+                  api.add_space_secret(repo_id=repo_id, key=key, value=value)
+                  print(f"Synced secret: {key}")
+
+          for key in variables:
+              value = os.environ.get(key, "")
+              if value:
+                  api.add_space_variable(repo_id=repo_id, key=key, value=value)
+                  print(f"Synced variable: {key}={value}")
+          PY

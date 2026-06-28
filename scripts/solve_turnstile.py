@@ -258,7 +258,15 @@ def solve_turnstile(url, proxy=None, timeout=60.0):
         display = setup_display()
         from seleniumbase import SB
 
-        with SB(uc=True, test=True, locale="en", proxy=proxy) as sb:
+        chrome_bin = os.environ.get("CHROME_BIN") or None
+        with SB(
+            uc=True,
+            test=True,
+            locale="en",
+            proxy=proxy,
+            use_chromium=True,
+            binary_location=chrome_bin,
+        ) as sb:
             sb.uc_open_with_reconnect(url, reconnect_time=10.0)
             time.sleep(5)
 
