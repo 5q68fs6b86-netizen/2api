@@ -133,6 +133,62 @@ function buildAutoRegisterOptions(body = {}, onProgress) {
   };
 }
 
+function parseAutoFillCount(rawCount, missing) {
+  const requestedCount = rawCount === undefined || rawCount === null || rawCount === ''
+    ? missing
+    : Number(rawCount);
+  return Math.min(Number.isFinite(requestedCount) ? requestedCount : missing, 20);
+}
+
+async function autoFillPool(body = {}, onProgress) {
+  const state = accountPool.getState();
+  const missing = state.pool.missingAccounts;
+  const count = parseAutoFillCount(body.count, missing);
+  if (count <= 0) {
+    return { success: true, message: '号池已满，无需填充', results: [] };
+  }
+
+  const results = [];
+  for (let i = 0; i < count; i += 1) {
+    try {
+      const result = await autoRegisterAccount(buildAutoRegisterOptions(body, onProgress));
+      if (result.success && result.apiKey) {
+        const account = accountPool.addAccount({
+          apiKey: result.apiKey,
+          label: `auto: ${result.email}`,
+          source: 'auto-register',
+        });
+        results.push({ index: i, success: true, email: result.email, account });
+      } else {
+        results.push({ index: i, success: false, error: '注册流程未完成' });
+      }
+    } catch (error) {
+      results.push({ index: i, success: false, error: error.message });
+    }
+  }
+
+  return { success: true, count: results.length, results };
+}
+
+function shouldAutoFillOnStartup() {
+  const value = firstNonEmpty(process.env.AUTO_FILL_ON_STARTUP, 'false').toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(value);
+}
+
+function scheduleStartupAutoFill() {
+  if (!shouldAutoFillOnStartup()) return;
+  const delayMs = Number(firstNonEmpty(process.env.AUTO_FILL_STARTUP_DELAY_MS, 3000)) || 3000;
+  setTimeout(async () => {
+    console.log('[auto-fill-startup] starting');
+    const result = await autoFillPool({}, (progress) => {
+      console.log('[auto-fill-startup]', JSON.stringify(progress));
+    });
+    const ok = result.results ? result.results.filter((item) => item.success).length : 0;
+    const fail = result.results ? result.results.filter((item) => !item.success).length : 0;
+    console.log('[auto-fill-startup] done', JSON.stringify({ success: result.success, count: result.count || 0, ok, fail, message: result.message }));
+  }, delayMs);
+}
+
 function envConfigured(name) {
   return Boolean(firstNonEmpty(process.env[name]));
 }
@@ -795,35 +851,7 @@ async function handleAdminApi(req, res, url) {
   }
 
   if (req.method === 'POST' && url.pathname === '/admin/api/auto-fill') {
-    const state = accountPool.getState();
-    const missing = state.pool.missingAccounts;
-    const requestedCount = body.count === undefined || body.count === null || body.count === ''
-      ? missing
-      : Number(body.count);
-    const count = Math.min(Number.isFinite(requestedCount) ? requestedCount : missing, 20);
-    if (count <= 0) {
-      sendJson(res, 200, { success: true, message: '号池已满，无需填充', results: [] });
-      return;
-    }
-    const results = [];
-    for (let i = 0; i < count; i++) {
-      try {
-        const result = await autoRegisterAccount(buildAutoRegisterOptions(body));
-        if (result.success && result.apiKey) {
-          const account = accountPool.addAccount({
-            apiKey: result.apiKey,
-            label: `auto: ${result.email}`,
-            source: 'auto-register',
-          });
-          results.push({ index: i, success: true, email: result.email, account });
-        } else {
-          results.push({ index: i, success: false, error: '注册流程未完成' });
-        }
-      } catch (error) {
-        results.push({ index: i, success: false, error: error.message });
-      }
-    }
-    sendJson(res, 200, { success: true, count: results.length, results });
+    sendJson(res, 200, await autoFillPool(body));
     return;
   }
 
@@ -927,4 +955,5 @@ server.on('error', (error) => {
 
 server.listen(PORT, () => {
   console.log(`2api listening on http://127.0.0.1:${PORT}`);
+  scheduleStartupAutoFill();
 });

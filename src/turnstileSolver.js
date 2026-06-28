@@ -6,6 +6,26 @@ const path = require('path');
 const SOLVER_SCRIPT = path.join(__dirname, '..', 'scripts', 'solve_turnstile.py');
 const DEFAULT_TIMEOUT_MS = Number(process.env.TURNSTILE_TIMEOUT_MS || 90000);
 
+function parseSolverOutput(output) {
+  const lines = String(output || '')
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line.startsWith('{') || !line.endsWith('}')) continue;
+    try {
+      return { result: JSON.parse(line), line };
+    } catch (_) {
+      // keep scanning earlier lines
+    }
+  }
+
+  return { result: null, line: lines[lines.length - 1] || '' };
+}
+
 /**
  * 调用 Python SeleniumBase 脚本求解 Turnstile
  *
@@ -48,17 +68,14 @@ function solveTurnstile(url, options = {}) {
       settled = true;
       clearTimeout(timer);
 
-      // 从 stdout 中提取最后一行 JSON
-      const lines = stdout.trim().split('\n');
-      const lastLine = lines[lines.length - 1] || '';
-
-      try {
-        const result = JSON.parse(lastLine);
+      const parsed = parseSolverOutput(stdout);
+      if (parsed.result) {
+        const result = parsed.result;
         resolve(result);
-      } catch (_) {
+      } else {
         resolve({
           success: false,
-          error: `解析输出失败 (code=${code}): ${lastLine.substring(0, 200)}${stderr ? '; stderr=' + stderr.substring(0, 200) : ''}`,
+          error: `解析输出失败 (code=${code}): ${parsed.line.substring(0, 200)}${stderr ? '; stderr=' + stderr.substring(0, 200) : ''}`,
         });
       }
     });
