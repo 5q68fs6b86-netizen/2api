@@ -431,6 +431,7 @@ function isRetryableAccountError(error) {
     'timeout',
     'socket',
     'econn',
+    'unknown error',
     '403',
     '429',
   ].some((needle) => message.includes(needle));
