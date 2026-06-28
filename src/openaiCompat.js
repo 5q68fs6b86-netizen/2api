@@ -56,6 +56,18 @@ function toKombaiModelSize(model) {
   return process.env.KOMBAI_MODEL_SIZE || 'best';
 }
 
+function defaultMessageType(model) {
+  const value = String(model || '').trim().toLowerCase();
+  if (value === 'kombai-chat' || value === 'chat') return 'chat';
+  if (value.startsWith('claude-') || value.includes('/claude-')) return 'chat';
+  return 'codegen';
+}
+
+function defaultWriteToDisk(openaiBody, messageType) {
+  if (openaiBody.writeToDisk !== undefined) return openaiBody.writeToDisk !== false;
+  return messageType !== 'chat';
+}
+
 function openAIModelIds() {
   const configured = String(process.env.OPENAI_MODEL_NAMES || '')
     .split(/[\n,;]/)
@@ -290,7 +302,7 @@ function buildMcpPayload(openaiBody) {
     : openaiBody.threadId !== undefined
       ? String(openaiBody.threadId)
       : '';
-  const messageType = process.env.KOMBAI_MESSAGE_TYPE || 'codegen';
+  const messageType = process.env.KOMBAI_MESSAGE_TYPE || defaultMessageType(openaiBody.model);
 
   const payload = {
     prompt,
@@ -312,7 +324,7 @@ function buildMcpPayload(openaiBody) {
     thinkingEffort: openaiBody.reasoning_effort || openaiBody.thinkingEffort || 'medium',
     messageType,
     planningMode: process.env.KOMBAI_PLANNING_MODE || 'plan_n_chat',
-    writeToDisk: openaiBody.writeToDisk !== false,
+    writeToDisk: defaultWriteToDisk(openaiBody, messageType),
     userEditedFiles: {},
     figmaToken: '',
     tokenType: 'Public',
@@ -350,7 +362,7 @@ function buildChatV2Payload(openaiBody, requestId) {
     : openaiBody.threadId !== undefined
       ? String(openaiBody.threadId)
       : '';
-  const messageType = process.env.KOMBAI_MESSAGE_TYPE || 'chat';
+  const messageType = process.env.KOMBAI_MESSAGE_TYPE || defaultMessageType(openaiBody.model);
 
   const payload = {
     ...EMPTY_CONTEXT,
@@ -386,7 +398,7 @@ function buildChatV2Payload(openaiBody, requestId) {
     thinkingEffort: openaiBody.reasoning_effort || openaiBody.thinkingEffort || 'medium',
     messageType,
     planningMode: process.env.KOMBAI_PLANNING_MODE || 'plan_n_chat',
-    writeToDisk: openaiBody.writeToDisk === true,
+    writeToDisk: defaultWriteToDisk(openaiBody, messageType),
     figmaToken: '',
     tokenType: 'Public',
     planTechStack: false,

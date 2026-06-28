@@ -52,6 +52,16 @@ function sendError(res, status, message, type = 'invalid_request_error') {
   });
 }
 
+function sendAnthropicError(res, status, message, type = 'api_error') {
+  sendJson(res, status, {
+    type: 'error',
+    error: {
+      type,
+      message,
+    },
+  });
+}
+
 async function readJson(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -87,8 +97,152 @@ function writeSse(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
+function writeAnthropicSse(res, event, payload) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
 function finishReasonFor(toolCalls) {
   return toolCalls.length > 0 ? 'tool_calls' : 'stop';
+}
+
+function anthropicStopReason(toolCalls = []) {
+  return toolCalls.length > 0 ? 'tool_use' : 'end_turn';
+}
+
+function estimateTokens(text) {
+  return Math.max(1, Math.ceil(String(text || '').length / 4));
+}
+
+function anthropicTextContent(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+
+  return content
+    .map((part) => {
+      if (!part || typeof part !== 'object') return '';
+      if (part.type === 'text') return part.text || '';
+      if (part.type === 'tool_result') {
+        const value = anthropicTextContent(part.content);
+        return `Tool result${part.tool_use_id ? ` ${part.tool_use_id}` : ''}:\n${value}`;
+      }
+      if (part.type === 'tool_use') {
+        return `Tool use ${part.name || 'tool'} (${part.id || 'unknown'}):\n${JSON.stringify(part.input || {})}`;
+      }
+      if (part.type === 'image') return '[image]';
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function anthropicContentToOpenAI(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return anthropicTextContent(content);
+
+  const output = [];
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+    if (part.type === 'text') {
+      output.push({ type: 'text', text: part.text || '' });
+      continue;
+    }
+    if (part.type === 'image' && part.source && typeof part.source === 'object') {
+      if (part.source.type === 'base64' && part.source.data) {
+        const mediaType = part.source.media_type || 'image/png';
+        output.push({ type: 'image_url', image_url: { url: `data:${mediaType};base64,${part.source.data}` } });
+        continue;
+      }
+      if (part.source.type === 'url' && part.source.url) {
+        output.push({ type: 'image_url', image_url: { url: part.source.url } });
+        continue;
+      }
+    }
+    const text = anthropicTextContent([part]);
+    if (text) output.push({ type: 'text', text });
+  }
+
+  return output.length > 0 ? output : '';
+}
+
+function anthropicSystemToText(system) {
+  if (!system) return '';
+  if (typeof system === 'string') return system;
+  if (!Array.isArray(system)) return '';
+  return system
+    .map((part) => {
+      if (typeof part === 'string') return part;
+      if (part && typeof part === 'object' && part.type === 'text') return part.text || '';
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function anthropicToOpenAI(body) {
+  const messages = [];
+  const system = anthropicSystemToText(body.system);
+  if (system) messages.push({ role: 'system', content: system });
+
+  for (const message of Array.isArray(body.messages) ? body.messages : []) {
+    const role = message.role === 'assistant' ? 'assistant' : 'user';
+    messages.push({
+      role,
+      content: anthropicContentToOpenAI(message.content),
+    });
+  }
+
+  return {
+    model: body.model || DEFAULT_OPENAI_MODEL_ID,
+    messages,
+    stream: body.stream === true,
+    max_tokens: body.max_tokens,
+    temperature: body.temperature,
+    top_p: body.top_p,
+    metadata: body.metadata,
+    writeToDisk: body.writeToDisk,
+  };
+}
+
+function parseToolInput(toolCall) {
+  const raw = toolCall && toolCall.function ? toolCall.function.arguments : '{}';
+  if (!raw) return {};
+  if (typeof raw !== 'string') return raw;
+  try {
+    return JSON.parse(raw);
+  } catch (_) {
+    return { value: raw };
+  }
+}
+
+function anthropicContentBlocks(text, toolCalls = []) {
+  const blocks = [];
+  if (text) blocks.push({ type: 'text', text });
+  for (const toolCall of toolCalls) {
+    blocks.push({
+      type: 'tool_use',
+      id: toolCall.id,
+      name: toolCall.function.name,
+      input: parseToolInput(toolCall),
+    });
+  }
+  return blocks.length > 0 ? blocks : [{ type: 'text', text: '' }];
+}
+
+function makeAnthropicMessage({ id, model, text, toolCalls = [] }) {
+  return {
+    id,
+    type: 'message',
+    role: 'assistant',
+    model,
+    content: anthropicContentBlocks(text, toolCalls),
+    stop_reason: anthropicStopReason(toolCalls),
+    stop_sequence: null,
+    usage: {
+      input_tokens: 1,
+      output_tokens: estimateTokens(text),
+    },
+  };
 }
 
 function errorMessage(error) {
@@ -416,6 +570,186 @@ async function handleChatCompletions(req, res) {
     text: result.text,
     toolCalls: result.toolCalls,
     finishReason: finishReasonFor(result.toolCalls),
+  }));
+}
+
+async function handleAnthropicMessages(req, res) {
+  const directApiKey = getRequestApiKey(req);
+  const body = await readJson(req);
+  const openaiBody = anthropicToOpenAI(body);
+  const model = body.model || openaiBody.model || DEFAULT_OPENAI_MODEL_ID;
+  const id = randomId('msg');
+
+  if (body.stream) {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const attempts = accountPool.accountAttempts(directApiKey);
+    if (attempts.length === 0) {
+      writeAnthropicSse(res, 'error', {
+        type: 'error',
+        error: {
+          type: 'authentication_error',
+          message: '号池为空。请在 /admin 添加已授权 Kombai API key，或在请求里传 X-Kombai-API-Key: <apiKeyToken>。',
+        },
+      });
+      res.end();
+      return;
+    }
+
+    let messageStarted = false;
+    let textBlockOpen = false;
+    let contentIndex = 0;
+    let emitted = false;
+    let toolUseEmitted = false;
+    let outputText = '';
+    let lastError = null;
+
+    const startMessage = () => {
+      if (messageStarted) return;
+      writeAnthropicSse(res, 'message_start', {
+        type: 'message_start',
+        message: {
+          id,
+          type: 'message',
+          role: 'assistant',
+          model,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      });
+      messageStarted = true;
+    };
+
+    const startTextBlock = () => {
+      startMessage();
+      if (textBlockOpen) return;
+      writeAnthropicSse(res, 'content_block_start', {
+        type: 'content_block_start',
+        index: contentIndex,
+        content_block: { type: 'text', text: '' },
+      });
+      textBlockOpen = true;
+    };
+
+    const stopTextBlock = () => {
+      if (!textBlockOpen) return;
+      writeAnthropicSse(res, 'content_block_stop', {
+        type: 'content_block_stop',
+        index: contentIndex,
+      });
+      textBlockOpen = false;
+      contentIndex += 1;
+    };
+
+    for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex += 1) {
+      const attempt = attempts[attemptIndex];
+      const proxy = accountPool.pickProxy();
+      const context = { ...attempt, proxy };
+      let attemptEmitted = false;
+
+      try {
+        await verifyUsableApiKey(attempt.apiKey, { proxy, footprint: attempt.footprint });
+        for await (const event of streamChatCompletion(openaiBody, attempt.apiKey, { requestId: id, proxy, footprint: attempt.footprint })) {
+          if (event.type === 'text' && event.text) {
+            emitted = true;
+            attemptEmitted = true;
+            outputText += event.text;
+            startTextBlock();
+            writeAnthropicSse(res, 'content_block_delta', {
+              type: 'content_block_delta',
+              index: contentIndex,
+              delta: { type: 'text_delta', text: event.text },
+            });
+          }
+
+          if (event.type === 'tool_call' && event.toolCall) {
+            emitted = true;
+            attemptEmitted = true;
+            toolUseEmitted = true;
+            stopTextBlock();
+            const input = parseToolInput(event.toolCall);
+            writeAnthropicSse(res, 'content_block_start', {
+              type: 'content_block_start',
+              index: contentIndex,
+              content_block: {
+                type: 'tool_use',
+                id: event.toolCall.id,
+                name: event.toolCall.function.name,
+                input: {},
+              },
+            });
+            writeAnthropicSse(res, 'content_block_delta', {
+              type: 'content_block_delta',
+              index: contentIndex,
+              delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+            });
+            writeAnthropicSse(res, 'content_block_stop', {
+              type: 'content_block_stop',
+              index: contentIndex,
+            });
+            contentIndex += 1;
+          }
+        }
+
+        accountPool.recordSuccess(context);
+        startMessage();
+        if (!emitted) {
+          startTextBlock();
+          stopTextBlock();
+        } else {
+          stopTextBlock();
+        }
+        writeAnthropicSse(res, 'message_delta', {
+          type: 'message_delta',
+          delta: {
+            stop_reason: toolUseEmitted ? 'tool_use' : 'end_turn',
+            stop_sequence: null,
+          },
+          usage: { output_tokens: estimateTokens(outputText) },
+        });
+        writeAnthropicSse(res, 'message_stop', { type: 'message_stop' });
+        res.end();
+        return;
+      } catch (error) {
+        lastError = error;
+        accountPool.recordFailure(context, error);
+        const canRetry = !directApiKey
+          && !attemptEmitted
+          && !emitted
+          && accountPool.state.config.failoverEnabled !== false
+          && isRetryableAccountError(error)
+          && attemptIndex < attempts.length - 1;
+        if (canRetry) continue;
+        writeAnthropicSse(res, 'error', {
+          type: 'error',
+          error: { type: errorType(error), message: errorMessage(error) },
+        });
+        res.end();
+        return;
+      }
+    }
+
+    writeAnthropicSse(res, 'error', {
+      type: 'error',
+      error: { type: errorType(lastError), message: errorMessage(lastError) },
+    });
+    res.end();
+    return;
+  }
+
+  const result = await runCollectWithPool(openaiBody, directApiKey, id);
+  sendJson(res, 200, makeAnthropicMessage({
+    id,
+    model,
+    text: result.text,
+    toolCalls: result.toolCalls,
   }));
 }
 
@@ -976,6 +1310,11 @@ async function route(req, res) {
     return;
   }
 
+  if (req.method === 'POST' && url.pathname === '/v1/messages') {
+    await handleAnthropicMessages(req, res);
+    return;
+  }
+
   if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/auth/api-key') {
     await handleAuthCode(req, res);
     return;
@@ -1001,6 +1340,11 @@ const server = http.createServer((req, res) => {
       return;
     }
     const status = error.statusCode || 500;
+    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+    if (url.pathname === '/v1/messages') {
+      sendAnthropicError(res, status, error.message || String(error), error.type || 'api_error');
+      return;
+    }
     sendError(res, status, error.message || String(error), error.type || 'server_error');
   });
 });

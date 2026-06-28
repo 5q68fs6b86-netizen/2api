@@ -131,7 +131,8 @@ function cleanStreamText(text, state = {}) {
 
   output = output
     .replace(/<kombai-element-update\b[^>]*><\/kombai-element-update>\s*/gi, '')
-    .replace(/<\/?kombai-collapsible\b[^>]*>\s*/gi, '');
+    .replace(/<\/?kombai-collapsible\b[^>]*>\s*/gi, '')
+    .replace(/<\/?(?:error|thinking|thought|analysis|final)\b[^>]*>\s*/gi, '');
   return output.trim() ? output : '';
 }
 
