@@ -98,6 +98,7 @@ function adminTokenFromRequest(req, url) {
   const auth = req.headers.authorization || '';
   if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
   if (req.headers['x-admin-token']) return String(req.headers['x-admin-token']).trim();
+  if (req.headers['x-api-key']) return String(req.headers['x-api-key']).trim();
   return url.searchParams.get('token') || '';
 }
 
