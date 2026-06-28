@@ -114,8 +114,9 @@ function stableHex(seed, label) {
 function getStableFootprintOptions(seed, options = {}) {
   const value = String(seed || '').trim();
   if (!value) return {};
+  const machineId = options.machineId || process.env.KOMBAI_MACHINE_ID || stableHex(value, 'machine');
   return {
-    machineId: options.machineId || process.env.KOMBAI_MACHINE_ID || DEFAULT_MACHINE_ID,
+    machineId,
     sessionPersistenceId: options.sessionPersistenceId || stableHex(value, 'session'),
     runtimeStateId: options.runtimeStateId || stableHex(value, 'runtime'),
     allowLocalSession: false,
