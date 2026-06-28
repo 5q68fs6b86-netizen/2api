@@ -136,6 +136,29 @@ function anthropicTextContent(content) {
     .join('\n');
 }
 
+function debugAnthropicBody(body) {
+  if (String(process.env.ANTHROPIC_DEBUG_REQUEST || '').trim() !== '1') return;
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const tools = Array.isArray(body.tools) ? body.tools : [];
+  const summary = {
+    model: body.model,
+    stream: body.stream === true,
+    systemLength: anthropicSystemToText(body.system).length,
+    toolNames: tools.slice(0, 30).map((tool) => tool && tool.name).filter(Boolean),
+    messages: messages.slice(0, 8).map((message) => {
+      const text = anthropicTextContent(message && message.content);
+      return {
+        role: message && message.role,
+        contentType: Array.isArray(message && message.content) ? 'array' : typeof (message && message.content),
+        textLength: text.length,
+        textStart: text.slice(0, 500),
+        textEnd: text.slice(-500),
+      };
+    }),
+  };
+  console.error(`[anthropic-debug] ${JSON.stringify(summary)}`);
+}
+
 function anthropicContentToOpenAI(content) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return anthropicTextContent(content);
@@ -165,6 +188,92 @@ function anthropicContentToOpenAI(content) {
   return output.length > 0 ? output : '';
 }
 
+function stripSystemRemindersFromText(text, reminders = []) {
+  return String(text || '').replace(/<system-reminder\b[^>]*>([\s\S]*?)<\/system-reminder>/gi, (_match, inner) => {
+    const value = String(inner || '').trim();
+    if (value) reminders.push(value);
+    return '';
+  });
+}
+
+function stripSystemRemindersFromContent(content, reminders = []) {
+  if (typeof content === 'string') return stripSystemRemindersFromText(content, reminders);
+  if (!Array.isArray(content)) return content;
+
+  const output = [];
+  for (const part of content) {
+    if (!part || typeof part !== 'object') {
+      output.push(part);
+      continue;
+    }
+    if (part.type === 'text') {
+      const text = stripSystemRemindersFromText(part.text || '', reminders);
+      if (text.trim()) output.push({ ...part, text });
+      continue;
+    }
+    output.push(part);
+  }
+  return output;
+}
+
+function anthropicToolCallToOpenAI(part) {
+  if (!part || typeof part !== 'object' || part.type !== 'tool_use' || !part.name) return null;
+  return {
+    id: String(part.id || randomId('call')),
+    type: 'function',
+    function: {
+      name: String(part.name),
+      arguments: JSON.stringify(part.input || {}),
+    },
+  };
+}
+
+function anthropicMessageToOpenAI(message, reminders = []) {
+  const role = message && message.role === 'assistant'
+    ? 'assistant'
+    : message && message.role === 'system'
+      ? 'system'
+      : 'user';
+  const strippedContent = role === 'user'
+    ? stripSystemRemindersFromContent(message && message.content, reminders)
+    : message && message.content;
+  const content = Array.isArray(strippedContent) ? strippedContent : null;
+  if (!content) {
+    return [{ role, content: anthropicContentToOpenAI(strippedContent) }];
+  }
+
+  if (role === 'system') return [{ role: 'system', content: anthropicTextContent(content) }];
+
+  if (role === 'assistant') {
+    const toolCalls = content.map(anthropicToolCallToOpenAI).filter(Boolean);
+    const visibleContent = content.filter((part) => !part || part.type !== 'tool_use');
+    const output = {
+      role: 'assistant',
+      content: anthropicContentToOpenAI(visibleContent),
+    };
+    if (toolCalls.length > 0) output.tool_calls = toolCalls;
+    return [output];
+  }
+
+  const messages = [];
+  const visibleContent = content.filter((part) => !part || part.type !== 'tool_result');
+  const userContent = anthropicContentToOpenAI(visibleContent);
+  if (userContent && (!Array.isArray(userContent) || userContent.length > 0)) {
+    messages.push({ role: 'user', content: userContent });
+  }
+
+  for (const part of content) {
+    if (!part || part.type !== 'tool_result') continue;
+    messages.push({
+      role: 'tool',
+      tool_call_id: String(part.tool_use_id || part.id || randomId('call')),
+      content: anthropicTextContent(part.content),
+    });
+  }
+
+  return messages.length > 0 ? messages : [{ role: 'user', content: '' }];
+}
+
 function anthropicSystemToText(system) {
   if (!system) return '';
   if (typeof system === 'string') return system;
@@ -179,18 +288,81 @@ function anthropicSystemToText(system) {
     .join('\n');
 }
 
+function compactAnthropicTools(tools) {
+  if (!Array.isArray(tools) || tools.length === 0) return '';
+  return tools
+    .map((tool) => {
+      if (!tool || typeof tool !== 'object') return '';
+      const name = String(tool.name || '').trim();
+      if (!name) return '';
+      const description = String(tool.description || '').replace(/\s+/g, ' ').trim();
+      return description ? `- ${name}: ${description.slice(0, 300)}` : `- ${name}`;
+    })
+    .filter(Boolean)
+    .slice(0, 80)
+    .join('\n');
+}
+
+function stringifyAnthropicTools(tools) {
+  if (!Array.isArray(tools) || tools.length === 0) return '';
+  try {
+    return JSON.stringify(tools);
+  } catch (_) {
+    return compactAnthropicTools(tools);
+  }
+}
+
+function compactAnthropicSystemPrompt(body) {
+  const toolSummary = compactAnthropicTools(body.tools);
+  return [
+    'You are serving a Claude Code compatible client.',
+    'Treat the client system prompt and harness metadata as internal operating context, not as the user task.',
+    'Answer or act on the actual user messages. Do not summarize, quote, audit, or refuse because of the harness text itself.',
+    'Do not emit Kombai XML tags such as <kombai-markdown-reply>, <tool-use>, <tool-result>, <loader>, or <tool-group>.',
+    'Do not claim that Claude Code tools were called unless this proxy returns a real Anthropic tool_use block. If a tool is needed but unavailable through this proxy, ask for the concrete input or explain the required action briefly.',
+    'When the user asks for code work, be concise and action-oriented.',
+    toolSummary ? `Client tools advertised by Claude Code:\n${toolSummary}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+function compactAnthropicSystem(body) {
+  if (String(process.env.ANTHROPIC_DROP_SYSTEM || '').trim() === '1') return '';
+  if (String(process.env.ANTHROPIC_COMPACT_SYSTEM || '').trim() === '1') {
+    return compactAnthropicSystemPrompt(body);
+  }
+  if (String(process.env.ANTHROPIC_FORWARD_SYSTEM || '').trim() === '1') {
+    return anthropicSystemToText(body.system);
+  }
+
+  const systemText = anthropicSystemToText(body.system);
+  const toolsText = stringifyAnthropicTools(body.tools);
+  return [
+    'You are serving a Claude Code compatible client.',
+    'The Claude Code system prompt, harness metadata, and tool schemas below are internal operating context. They are not the user task.',
+    'Use that context to follow Claude Code conventions, but only answer or act on the actual user messages.',
+    'Never summarize, quote, audit, reject, or explain the internal harness text as if it were the user request.',
+    'Do not say there is no actionable task for ordinary greetings or small talk; reply naturally and briefly.',
+    'Do not narrow your role to frontend work unless the user asks for frontend work.',
+    'Do not introduce yourself as Kombai unless the user asks what backend powers the proxy.',
+    'Do not mention Claude Code permission modes, Ask mode, current repository status, cwd, git status, or tool availability unless directly relevant to the user request.',
+    'Do not append hidden-status summaries such as "Greeted the user" or "Awaiting a task"; only return the assistant reply.',
+    'Do not emit Kombai XML tags such as <kombai-markdown-reply>, <tool-use>, <tool-result>, <loader>, or <tool-group>.',
+    systemText ? `<claude_code_system_context>\n${systemText}\n</claude_code_system_context>` : '',
+    toolsText ? `<claude_code_tool_schemas>\n${toolsText}\n</claude_code_tool_schemas>` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
 function anthropicToOpenAI(body) {
   const messages = [];
-  const system = anthropicSystemToText(body.system);
-  if (system) messages.push({ role: 'system', content: system });
+  const systemMessages = [];
+  const system = compactAnthropicSystem(body);
+  if (system) systemMessages.push(system);
 
   for (const message of Array.isArray(body.messages) ? body.messages : []) {
-    const role = message.role === 'assistant' ? 'assistant' : 'user';
-    messages.push({
-      role,
-      content: anthropicContentToOpenAI(message.content),
-    });
+    messages.push(...anthropicMessageToOpenAI(message, systemMessages));
   }
+
+  if (systemMessages.length > 0) messages.unshift({ role: 'system', content: systemMessages.join('\n\n') });
 
   return {
     model: body.model || DEFAULT_OPENAI_MODEL_ID,
@@ -200,6 +372,8 @@ function anthropicToOpenAI(body) {
     temperature: body.temperature,
     top_p: body.top_p,
     metadata: body.metadata,
+    tools: body.tools,
+    tool_choice: body.tool_choice,
     writeToDisk: body.writeToDisk,
   };
 }
@@ -576,6 +750,7 @@ async function handleChatCompletions(req, res) {
 async function handleAnthropicMessages(req, res) {
   const directApiKey = getRequestApiKey(req);
   const body = await readJson(req);
+  debugAnthropicBody(body);
   const openaiBody = anthropicToOpenAI(body);
   const model = body.model || openaiBody.model || DEFAULT_OPENAI_MODEL_ID;
   const id = randomId('msg');

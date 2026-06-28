@@ -12,6 +12,11 @@ const API_URL = process.env.KOMBAI_API_URL || 'https://api.assistant.app.kombai.
 const AUTH_CONNECT_URL = process.env.KOMBAI_AUTH_CONNECT_URL || 'https://agent.kombai.com/vscode-connect';
 const SESSION_CHARS = 'abcdefghijklmnopqrstuvqxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
+function debugWs(message, data = {}) {
+  if (String(process.env.KOMBAI_DEBUG_WS || '').trim() !== '1') return;
+  console.error(`[kombai-ws] ${message} ${JSON.stringify(data)}`);
+}
+
 function randomSessionId(length = 16) {
   let output = '';
   for (let index = 0; index < length; index += 1) {
@@ -97,23 +102,178 @@ function stringifyToolArguments(input) {
   }
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function parseToolArguments(toolCall) {
+  if (!toolCall || !toolCall.function) return {};
+  const raw = toolCall.function.arguments;
+  if (!raw) return {};
+  if (typeof raw !== 'string') return raw;
+  try {
+    return JSON.parse(raw);
+  } catch (_) {
+    return { value: raw };
+  }
+}
+
+function makeMappedToolCall(original, name, input) {
+  return {
+    ...original,
+    function: {
+      name,
+      arguments: stringifyToolArguments(input),
+    },
+  };
+}
+
+function bashToolAvailable(allowedToolNames) {
+  return !allowedToolNames || allowedToolNames.size === 0 || allowedToolNames.has('Bash');
+}
+
+function mapInternalToolCall(toolCall, allowedToolNames) {
+  const name = toolCall && toolCall.function && toolCall.function.name;
+  if (!name) return null;
+  if (name === 'auto_continue') return null;
+
+  const input = parseToolArguments(toolCall);
+  if (name === 'ripgrep') {
+    if (!bashToolAvailable(allowedToolNames)) return null;
+    const args = Array.isArray(input.commandArgs) ? input.commandArgs : [];
+    if (args.length === 0) return null;
+    const root = input.rootDirectory || '.';
+    return makeMappedToolCall(toolCall, 'Bash', {
+      command: `cd ${shellQuote(root)} && rg ${args.map(shellQuote).join(' ')}`,
+      description: input.description || 'Run ripgrep',
+    });
+  }
+
+  if (name === 'list_directory') {
+    if (!bashToolAvailable(allowedToolNames)) return null;
+    const dir = input.directoryPath || input.path || '.';
+    const depth = Math.max(1, Math.min(Number(input.depth) || 1, 10));
+    const maxLines = Math.max(1, Math.min(Number(input.maxLineCount) || 200, 1000));
+    return makeMappedToolCall(toolCall, 'Bash', {
+      command: `find ${shellQuote(dir)} -maxdepth ${depth} -print | sed -n '1,${maxLines}p'`,
+      description: `List ${dir}`,
+    });
+  }
+
+  if (!allowedToolNames || allowedToolNames.size === 0 || allowedToolNames.has(name)) return toolCall;
+  return null;
+}
+
+function decodeXmlAttribute(value) {
+  return String(value || '')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+function parseXmlAttributes(tag) {
+  const attrs = {};
+  const pattern = /([A-Za-z_:][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
+  let match;
+  while ((match = pattern.exec(String(tag || ''))) !== null) {
+    attrs[match[1]] = decodeXmlAttribute(match[2] !== undefined ? match[2] : match[3] !== undefined ? match[3] : match[4]);
+  }
+  return attrs;
+}
+
+function parseMaybeJson(text) {
+  const value = String(text || '').trim();
+  if (!value) return {};
+
+  try {
+    return JSON.parse(value);
+  } catch (_) {
+    // Try base64-encoded JSON next.
+  }
+
+  try {
+    const decoded = Buffer.from(value, 'base64').toString('utf8').trim();
+    if (decoded) return JSON.parse(decoded);
+  } catch (_) {
+    // Fall through to a plain string wrapper.
+  }
+
+  return { value };
+}
+
+function allowedToolNamesFromBody(openaiBody = {}) {
+  const names = new Set();
+  for (const tool of Array.isArray(openaiBody.tools) ? openaiBody.tools : []) {
+    if (!tool || typeof tool !== 'object') continue;
+    const name = tool.name || (tool.function && tool.function.name);
+    if (name) names.add(String(name));
+  }
+  return names;
+}
+
+function filterAllowedToolCalls(toolCalls, allowedToolNames) {
+  const mapped = [];
+  for (const toolCall of toolCalls) {
+    const mappedCall = mapInternalToolCall(toolCall, allowedToolNames);
+    if (mappedCall) mapped.push(mappedCall);
+  }
+  return mapped;
+}
+
+function toolCallsFromText(text, state = {}, allowedToolNames = new Set()) {
+  if (!text && !state.pendingToolUseText) return [];
+  let source = `${state.pendingToolUseText || ''}${String(text || '')}`;
+  state.pendingToolUseText = '';
+
+  const lower = source.toLowerCase();
+  const lastOpen = lower.lastIndexOf('<tool-use');
+  const lastClose = lower.lastIndexOf('</tool-use>');
+  if (lastOpen !== -1 && lastOpen > lastClose) {
+    state.pendingToolUseText = source.slice(lastOpen);
+    source = source.slice(0, lastOpen);
+  }
+
+  const calls = [];
+  const pattern = /<tool-use\b([^>]*)>([\s\S]*?)<\/tool-use>/gi;
+  let match;
+  while ((match = pattern.exec(source)) !== null) {
+    const attrs = parseXmlAttributes(match[1]);
+    const name = attrs.name || attrs.toolName;
+    if (!name) continue;
+    const input = attrs.input !== undefined ? parseMaybeJson(attrs.input) : parseMaybeJson(match[2]);
+    const toolCall = normalizeToolCall({
+      id: attrs.id,
+      name,
+      input,
+    });
+    if (toolCall) calls.push(toolCall);
+  }
+
+  return calls;
+}
+
 function cleanStreamText(text, state = {}) {
   let cleaned = String(text || '')
     .replace(/<loader\b[^>]*><\/loader>\s*/gi, '')
     .replace(/<loaderUpdate\b[^>]*><\/loaderUpdate>\s*/gi, '')
-    .replace(/<loaderUpdate\b[^>]*>\s*/gi, '');
+    .replace(/<loaderUpdate\b[^>]*>\s*/gi, '')
+    .replace(/<tool-use\b[\s\S]*?(?:<\/tool-use>|$)\s*/gi, '')
+    .replace(/<tool-result\b[\s\S]*?(?:<\/tool-result>|$)\s*/gi, '');
 
   let output = '';
   while (cleaned) {
-    if (state.suppressInternalMarkup) {
-      const closeMatch = cleaned.match(/<\/tool-group>/i);
+    if (state.suppressInternalMarkup || state.suppressInternalToolUse) {
+      const closeMatch = cleaned.match(state.suppressInternalToolUse ? /<\/tool-use>/i : /<\/tool-group>/i);
       if (!closeMatch) return output.trim() ? output : '';
       cleaned = cleaned.slice(closeMatch.index + closeMatch[0].length);
       state.suppressInternalMarkup = false;
+      state.suppressInternalToolUse = false;
       continue;
     }
 
-    const openMatch = cleaned.match(/<tool-group\b[^>]*>/i);
+    const openMatch = cleaned.match(/<tool-(?:group|use)\b[^>]*>/i);
     if (!openMatch) {
       output += cleaned;
       break;
@@ -121,9 +281,11 @@ function cleanStreamText(text, state = {}) {
 
     output += cleaned.slice(0, openMatch.index);
     cleaned = cleaned.slice(openMatch.index + openMatch[0].length);
-    const closeMatch = cleaned.match(/<\/tool-group>/i);
+    const isToolUse = /^<tool-use\b/i.test(openMatch[0]);
+    const closeMatch = cleaned.match(isToolUse ? /<\/tool-use>/i : /<\/tool-group>/i);
     if (!closeMatch) {
-      state.suppressInternalMarkup = true;
+      if (isToolUse) state.suppressInternalToolUse = true;
+      else state.suppressInternalMarkup = true;
       break;
     }
     cleaned = cleaned.slice(closeMatch.index + closeMatch[0].length);
@@ -131,8 +293,10 @@ function cleanStreamText(text, state = {}) {
 
   output = output
     .replace(/<kombai-element-update\b[^>]*><\/kombai-element-update>\s*/gi, '')
+    .replace(/<tool-use\b[\s\S]*$/gi, '')
+    .replace(/\bThe connection was lost mid-run\.\s*/gi, '')
     .replace(/<\/?kombai-collapsible\b[^>]*>\s*/gi, '')
-    .replace(/<\/?(?:error|thinking|thought|analysis|final)\b[^>]*>\s*/gi, '');
+    .replace(/<\/?(?:error|thinking|thought|analysis|final|kombai-markdown-reply)\b[^>]*>\s*/gi, '');
   return output.trim() ? output : '';
 }
 
@@ -232,6 +396,10 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
   let done = false;
   let failure = null;
   const streamCleanState = {};
+  const streamToolUseState = {};
+  const emittedToolCallIds = new Set();
+  const allowedToolNames = allowedToolNamesFromBody(openaiBody);
+  let emittedText = '';
 
   const ws = new WebSocket(wsUrl, wsOptions);
 
@@ -253,6 +421,29 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
     }
   }
 
+  function pushToolCalls(toolCalls, raw) {
+    const allowedCalls = filterAllowedToolCalls(toolCalls, allowedToolNames);
+    for (const toolCall of allowedCalls) {
+      if (emittedToolCallIds.has(toolCall.id)) continue;
+      emittedToolCallIds.add(toolCall.id);
+      push({ type: 'tool_call', toolCall, raw });
+    }
+    return allowedCalls.length > 0;
+  }
+
+  function pushText(text, raw) {
+    let next = String(text || '');
+    if (!next) return false;
+    if (!emittedText) next = next.replace(/^\s+/, '');
+    if (!next) return false;
+    if (emittedText && emittedText.trimEnd().endsWith(next.trim())) return false;
+    if (emittedText && next.startsWith(emittedText)) next = next.slice(emittedText.length);
+    if (!next) return false;
+    emittedText += next;
+    push({ type: 'text', text: next, raw });
+    return true;
+  }
+
   function finish() {
     done = true;
     clearTimeout(timeout);
@@ -263,6 +454,7 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
   }
 
   ws.on('open', () => {
+    debugWs('open', { action, requestId, sessionId, wsUrl, viaProxy: Boolean(proxyUrl) });
     ws.send(JSON.stringify(message));
   });
 
@@ -275,25 +467,34 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
       return;
     }
 
+    debugWs('frame', {
+      action: frame.action,
+      requestId: frame.requestId,
+      expectedRequestId: requestId,
+      hasText: Boolean(frame.response && typeof frame.response.text === 'string'),
+      hasResult: Boolean(frame.result),
+      pending: frame.pending,
+    });
     if (frame.requestId && frame.requestId !== requestId) return;
 
     const toolCalls = toolCallsFromFrame(frame);
-    if (toolCalls.length > 0) {
-      for (const toolCall of toolCalls) push({ type: 'tool_call', toolCall, raw: frame });
+    if (toolCalls.length > 0 && pushToolCalls(toolCalls, frame)) {
       return;
     }
 
     if (frame.action === 'streamMessage' && frame.response && typeof frame.response.text === 'string') {
+      pushToolCalls(toolCallsFromText(frame.response.text, streamToolUseState, allowedToolNames), frame);
       const text = cleanStreamText(frame.response.text, streamCleanState);
-      if (text) push({ type: 'text', text, raw: frame });
+      if (text) pushText(text, frame);
       return;
     }
 
     if (frame.action === 'agentResult' && frame.result && Array.isArray(frame.result.content)) {
       for (const part of frame.result.content) {
         if (part && part.type === 'text' && typeof part.text === 'string') {
+          pushToolCalls(toolCallsFromText(part.text, streamToolUseState, allowedToolNames), frame);
           const text = cleanStreamText(part.text, streamCleanState);
-          if (text) push({ type: 'text', text, raw: frame });
+          if (text) pushText(text, frame);
         }
       }
       finish();
@@ -323,11 +524,13 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
   });
 
   ws.on('error', (error) => {
+    debugWs('error', { message: error.message });
     failure = error;
     finish();
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
+    debugWs('close', { requestId, code, reason: reason ? reason.toString() : '' });
     finish();
   });
 

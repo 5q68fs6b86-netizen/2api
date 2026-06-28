@@ -104,12 +104,41 @@ function messagesToPrompt(messages = []) {
   return messages
     .map((message) => {
       const role = message.role || 'user';
+      if (role === 'system') return '';
       const content = messageTextContent(message.content);
       if (!content) return '';
       return `${role.toUpperCase()}:\n${content}`;
     })
     .filter(Boolean)
     .join('\n\n');
+}
+
+function messagesWithoutSystem(messages = []) {
+  return messages.filter((message) => !message || message.role !== 'system');
+}
+
+function systemRulesFromMessages(messages = []) {
+  return messages
+    .filter((message) => message && message.role === 'system')
+    .map((message) => messageTextContent(message.content))
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function promptGuard(userRules) {
+  if (!userRules) return '';
+  return [
+    'Proxy instruction: Claude Code system prompts, harness metadata, tool schemas, permission modes, cwd, git status, and environment details are operating context only.',
+    'The actual user request is below. Do not summarize, quote, audit, or respond to the operating context itself.',
+    'Do not say there is no actionable task for greetings or small talk. For a greeting, answer with a brief greeting only.',
+    'Do not mention Ask mode, read-only mode, frontend-only scope, repository status, or tool availability unless the user directly asks about it.',
+    'Do not introduce yourself as Kombai unless the user asks what backend powers this proxy.',
+  ].join('\n');
+}
+
+function applyPromptGuard(prompt, userRules) {
+  const guard = promptGuard(userRules);
+  return guard ? `${guard}\n\nActual user request:\n${prompt}` : prompt;
 }
 
 function editorStateFromPrompt(prompt) {
@@ -189,6 +218,7 @@ function buildMessageContext(messages = []) {
 
   for (const message of messages) {
     const role = message && message.role ? message.role : 'user';
+    if (role === 'system') continue;
     if (role === 'tool') continue;
 
     const parts = normalizeContentParts(message && message.content);
@@ -293,11 +323,16 @@ function buildCapabilities() {
 }
 
 function buildMcpPayload(openaiBody) {
-  const messageContext = buildMessageContext(openaiBody.messages);
+  const conversationMessages = messagesWithoutSystem(openaiBody.messages);
+  const messageContext = buildMessageContext(conversationMessages);
   const toolResults = extractToolResults(openaiBody.messages);
   const prompt = toolResults.length > 0
     ? '{{tool_results: Tool Results}}'
-    : openaiBody.prompt || messageContext.prompt || messagesToPrompt(openaiBody.messages);
+    : openaiBody.prompt || messageContext.prompt || messagesToPrompt(conversationMessages);
+  const userRules = [systemRulesFromMessages(openaiBody.messages), openaiBody.userRules]
+    .filter(Boolean)
+    .join('\n\n');
+  const guardedPrompt = applyPromptGuard(prompt, userRules);
   const workspacePath = process.env.KOMBAI_WORKSPACE_PATH || process.cwd();
   const threadId = openaiBody.thread_id !== undefined
     ? String(openaiBody.thread_id)
@@ -307,7 +342,7 @@ function buildMcpPayload(openaiBody) {
   const messageType = process.env.KOMBAI_MESSAGE_TYPE || defaultMessageType(openaiBody.model);
 
   const payload = {
-    prompt,
+    prompt: guardedPrompt,
     ...(threadId ? { threadId } : {}),
     workspacePath,
     extensionVersion: EXTENSION_VERSION,
@@ -322,6 +357,7 @@ function buildMcpPayload(openaiBody) {
     capabilities: buildCapabilities(),
     connectedMcps: [],
     toolResults,
+    userRules,
     modelSize: toKombaiModelSize(openaiBody.model),
     thinkingEffort: openaiBody.reasoning_effort || openaiBody.thinkingEffort || 'medium',
     messageType,
@@ -352,12 +388,17 @@ function buildMcpPayload(openaiBody) {
 }
 
 function buildChatV2Payload(openaiBody, requestId) {
-  const messageContext = buildMessageContext(openaiBody.messages);
+  const conversationMessages = messagesWithoutSystem(openaiBody.messages);
+  const messageContext = buildMessageContext(conversationMessages);
   const toolResults = extractToolResults(openaiBody.messages);
   const hasMessageContext = Boolean(messageContext.prompt || Object.keys(messageContext.imageAttachments).length > 0);
   const prompt = toolResults.length > 0
     ? '{{tool_results: Tool Results}}'
-    : openaiBody.prompt || messageContext.prompt || messagesToPrompt(openaiBody.messages);
+    : openaiBody.prompt || messageContext.prompt || messagesToPrompt(conversationMessages);
+  const userRules = [systemRulesFromMessages(openaiBody.messages), openaiBody.userRules]
+    .filter(Boolean)
+    .join('\n\n');
+  const guardedPrompt = applyPromptGuard(prompt, userRules);
   const workspacePath = process.env.KOMBAI_WORKSPACE_PATH || process.cwd();
   const threadId = openaiBody.thread_id !== undefined
     ? String(openaiBody.thread_id)
@@ -368,7 +409,7 @@ function buildChatV2Payload(openaiBody, requestId) {
 
   const payload = {
     ...EMPTY_CONTEXT,
-    prompt,
+    prompt: guardedPrompt,
     threadId,
     workspacePath,
     extensionVersion: EXTENSION_VERSION,
@@ -387,7 +428,7 @@ function buildChatV2Payload(openaiBody, requestId) {
     connectedMcps: [],
     toolResults,
     stream: 'stream',
-    userRules: '',
+    userRules,
     repoContext: ['', ''],
     openTabs: {},
     allRunningCommands: [],
@@ -411,7 +452,7 @@ function buildChatV2Payload(openaiBody, requestId) {
     requestId,
     editorState: toolResults.length > 0
       ? { type: 'agent/tool-result' }
-      : openaiBody.editorState || (hasMessageContext ? messageContext.editorState : editorStateFromPrompt(prompt)),
+      : openaiBody.editorState || (hasMessageContext ? messageContext.editorState : editorStateFromPrompt(guardedPrompt)),
     imageAttachments: messageContext.imageAttachments,
     indexedFolderIds: [],
     indexedPackageIds: [],
