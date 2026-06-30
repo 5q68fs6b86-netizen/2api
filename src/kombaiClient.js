@@ -2,6 +2,7 @@
 
 const WebSocket = require('ws');
 const os = require('os');
+const zlib = require('zlib');
 const { EXTENSION_VERSION, buildKombaiPayload, randomId } = require('./openaiCompat');
 const { getClientContext } = require('./footprint');
 const { createProxyAgent } = require('./proxyAgent');
@@ -11,6 +12,8 @@ const WS_URL = process.env.KOMBAI_WS_URL || 'wss://ws.assistant.app.kombai.com';
 const API_URL = process.env.KOMBAI_API_URL || 'https://api.assistant.app.kombai.com';
 const AUTH_CONNECT_URL = process.env.KOMBAI_AUTH_CONNECT_URL || 'https://agent.kombai.com/vscode-connect';
 const SESSION_CHARS = 'abcdefghijklmnopqrstuvqxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const SOCKET_PAYLOAD_LIMIT = 28_000;
+const REST_ACTIONS = new Set(['chatv2', 'agentv2', 'agentv3', 'interrupt', 'reply', 'enhancePrompt', 'toolv1', 'mcpv1']);
 
 function debugWs(message, data = {}) {
   if (String(process.env.KOMBAI_DEBUG_WS || '').trim() !== '1') return;
@@ -58,16 +61,28 @@ function restHeaders(options = {}) {
 }
 
 function buildSocketMessage({ action, requestId, sessionId, payload, footprint }) {
-  const socketPayload = { ...payload };
+  const sourcePayload = payload && typeof payload === 'object' ? payload : {};
+  const topLevelThreadId = sourcePayload.threadId;
+  const topLevelWorkspacePath = sourcePayload.workspacePath;
+  const topLevelHomedir = sourcePayload.homedir;
+  const topLevelMessageType = sourcePayload.messageType;
+  const topLevelSubAction = sourcePayload.subAction;
+  const socketPayload = action === 'mcpv1' || action === 'chatv2'
+    ? {
+        messageType: action === 'chatv2' ? 'command/codegen' : payload.messageType || 'codegen',
+        messageId: requestId,
+        data: payload,
+      }
+    : { ...payload };
   const message = {
     action,
     requestId,
     sessionId,
-    ...(socketPayload.threadId ? { threadId: socketPayload.threadId } : {}),
-    ...(socketPayload.workspacePath ? { workspacePath: socketPayload.workspacePath } : {}),
-    ...(socketPayload.homedir ? { homedir: socketPayload.homedir } : {}),
-    ...(socketPayload.messageType ? { messageType: socketPayload.messageType } : {}),
-    ...(socketPayload.subAction ? { subAction: socketPayload.subAction } : {}),
+    ...(socketPayload.threadId || topLevelThreadId ? { threadId: socketPayload.threadId || topLevelThreadId } : {}),
+    ...(socketPayload.workspacePath || topLevelWorkspacePath ? { workspacePath: socketPayload.workspacePath || topLevelWorkspacePath } : {}),
+    ...(socketPayload.homedir || topLevelHomedir ? { homedir: socketPayload.homedir || topLevelHomedir } : {}),
+    ...(socketPayload.messageType || topLevelMessageType ? { messageType: socketPayload.messageType || topLevelMessageType } : {}),
+    ...(socketPayload.subAction || topLevelSubAction ? { subAction: socketPayload.subAction || topLevelSubAction } : {}),
     ...(socketPayload.stream ? { stream: 'stream' } : {}),
     ...(socketPayload.api ? { api: socketPayload.api } : {}),
     clientContext: getClientContext(footprint || {}),
@@ -79,6 +94,66 @@ function buildSocketMessage({ action, requestId, sessionId, payload, footprint }
   delete message.payload.stream;
   delete message.payload.api;
   return message;
+}
+
+function socketMessageStats(message) {
+  let payloadBytes = 0;
+  try {
+    payloadBytes = Buffer.byteLength(JSON.stringify(message.payload || {}));
+  } catch (_) {
+    payloadBytes = 0;
+  }
+
+  const text = JSON.stringify(message);
+  return {
+    messageBytes: Buffer.byteLength(text),
+    payloadBytes,
+    payloadKeys: message.payload && typeof message.payload === 'object' ? Object.keys(message.payload).slice(0, 20) : [],
+    hasMcpEnvelope: Boolean(message.payload && message.payload.data),
+  };
+}
+
+async function postRestAction(message, apiKey, options = {}) {
+  const body = zlib.gzipSync(Buffer.from(JSON.stringify(message), 'utf8'));
+  const url = new URL('/action', API_URL);
+  const headers = restHeaders({
+    apiKey,
+    sessionId: message.sessionId,
+    footprint: options.footprint,
+    contentType: 'application/gzip',
+  });
+  const proxyUrl = proxyUrlFromOptions(options);
+
+  if (!proxyUrl) {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body,
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(async () => ({ message: await response.text().catch(() => '') }));
+      const error = new Error(data.errorCode || data.error || data.message || `Kombai REST action failed: HTTP ${response.status}`);
+      error.statusCode = response.status;
+      error.data = data;
+      throw error;
+    }
+    return;
+  }
+
+  const response = await request(url.toString(), {
+    method: 'POST',
+    headers,
+    body,
+    proxy: proxyUrl,
+    timeout: options.timeout || 30000,
+  });
+  if (response.status < 200 || response.status >= 300) {
+    const data = response.data && typeof response.data === 'object' ? response.data : {};
+    const error = new Error(data.errorCode || data.error || data.message || `Kombai REST action failed: HTTP ${response.status}`);
+    error.statusCode = response.status;
+    error.data = data || response.text;
+    throw error;
+  }
 }
 
 function normalizeSocketFrame(data) {
@@ -372,7 +447,7 @@ function proxyUrlFromOptions(options = {}) {
 }
 
 async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
-  const requestId = options.requestId || randomId('chatcmpl');
+  const requestId = options.kombaiRequestId || randomSessionId(16);
   const sessionId = options.sessionId || randomSessionId();
   const timeoutMs = Number(process.env.KOMBAI_TIMEOUT_MS || options.timeoutMs || 180000);
   const action = process.env.KOMBAI_ACTION || options.action || 'mcpv1';
@@ -453,9 +528,38 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
     }
   }
 
-  ws.on('open', () => {
-    debugWs('open', { action, requestId, sessionId, wsUrl, viaProxy: Boolean(proxyUrl) });
-    ws.send(JSON.stringify(message));
+  ws.on('open', async () => {
+    const stats = socketMessageStats(message);
+    const useRestAction = stats.messageBytes >= SOCKET_PAYLOAD_LIMIT && REST_ACTIONS.has(action);
+    debugWs('open', {
+      action,
+      requestId,
+      sessionId,
+      wsUrl,
+      viaProxy: Boolean(proxyUrl),
+      transport: useRestAction ? 'rest' : 'socket',
+      ...stats,
+    });
+
+    try {
+      if (useRestAction) {
+        await postRestAction(message, apiKey, {
+          proxy: options.proxy,
+          proxyUrl,
+          footprint: options.footprint,
+          timeout: Math.min(timeoutMs, 30000),
+        });
+        return;
+      }
+      ws.send(JSON.stringify(message), (error) => {
+        if (!error) return;
+        failure = error;
+        finish();
+      });
+    } catch (error) {
+      failure = error;
+      finish();
+    }
   });
 
   ws.on('message', (data) => {
@@ -471,11 +575,15 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
       action: frame.action,
       requestId: frame.requestId,
       expectedRequestId: requestId,
+      keys: Object.keys(frame).slice(0, 20),
+      responseKeys: frame.response && typeof frame.response === 'object' ? Object.keys(frame.response).slice(0, 20) : [],
+      resultKeys: frame.result && typeof frame.result === 'object' ? Object.keys(frame.result).slice(0, 20) : [],
+      message: typeof frame.message === 'string' ? frame.message.slice(0, 160) : '',
       hasText: Boolean(frame.response && typeof frame.response.text === 'string'),
       hasResult: Boolean(frame.result),
       pending: frame.pending,
     });
-    if (frame.requestId && frame.requestId !== requestId) return;
+    if (frame.requestId && frame.requestId !== requestId && !['agentv2', 'agentv3'].includes(action)) return;
 
     const toolCalls = toolCallsFromFrame(frame);
     if (toolCalls.length > 0 && pushToolCalls(toolCalls, frame)) {
@@ -508,6 +616,13 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
 
     if (frame.action === 'error') {
       const msg = frame.message || frame.response || frame.error || 'Kombai socket returned an error';
+      debugWs('frame-error', {
+        requestId,
+        statusCode: frame.statusCode || frame.status || frame.code,
+        error: typeof frame.error === 'string' ? frame.error : frame.error && frame.error.errorCode,
+        message: typeof frame.message === 'string' ? frame.message.slice(0, 300) : '',
+        response: typeof frame.response === 'string' ? frame.response.slice(0, 300) : '',
+      });
       failure = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
       failure.statusCode = frame.statusCode || frame.status || frame.code;
       failure.data = frame;
@@ -531,6 +646,9 @@ async function* streamChatCompletion(openaiBody, apiKey, options = {}) {
 
   ws.on('close', (code, reason) => {
     debugWs('close', { requestId, code, reason: reason ? reason.toString() : '' });
+    if (!done) {
+      failure = failure || new Error(`Kombai socket closed before response (code=${code || 0}, reason=${reason ? reason.toString() : ''})`);
+    }
     finish();
   });
 

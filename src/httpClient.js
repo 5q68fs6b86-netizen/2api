@@ -47,9 +47,11 @@ async function request(url, options = {}) {
     const mod = target.protocol === 'https:' ? https : http;
     const body = options.body === undefined
       ? undefined
-      : typeof options.body === 'string'
+      : typeof options.body === 'string' || Buffer.isBuffer(options.body)
         ? options.body
-        : JSON.stringify(options.body);
+        : ArrayBuffer.isView(options.body)
+          ? Buffer.from(options.body.buffer, options.body.byteOffset, options.body.byteLength)
+          : JSON.stringify(options.body);
 
     const headers = { ...(options.headers || {}) };
     if (body && !headers['Content-Length']) headers['Content-Length'] = Buffer.byteLength(body);
