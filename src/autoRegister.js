@@ -43,6 +43,15 @@ function firstNonEmpty(...values) {
   return '';
 }
 
+function redactSensitiveText(value) {
+  return String(value || '')
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[redacted-email]')
+    .replace(/https?:\/\/[^\s"']+/g, '[redacted-url]')
+    .replace(/\b(?:access_token|refresh_token|apiKeyToken|apiKey|token|password)\b["']?\s*[:=]\s*["'][^"']+["']/gi, '$1:"[redacted]"')
+    .replace(/\b[a-f0-9]{48,}\b/gi, '[redacted-token]')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted-jwt]');
+}
+
 function playwrightProxy(proxyUrl) {
   const normalized = normalizeProxyUrl(proxyUrl);
   if (!normalized) return null;
@@ -244,7 +253,7 @@ async function completeVscodeConnect(connectUrl, cookies = {}, credentials = {},
     if (url.includes('/api/') && !url.includes('sentry') && !url.includes('facebook') && !url.includes('aplo-evnt') && !url.includes('_next/static')) {
       try {
         const body = await response.text();
-        console.log(`[auto-register] API: ${response.status()} ${url} => ${body.substring(0, 300)}`);
+        console.log(`[auto-register] API: ${response.status()} ${redactSensitiveText(url)} => ${redactSensitiveText(body.substring(0, 300))}`);
       } catch {}
     }
   });

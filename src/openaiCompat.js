@@ -117,6 +117,16 @@ function messagesWithoutSystem(messages = []) {
   return messages.filter((message) => !message || message.role !== 'system');
 }
 
+function latestUserPrompt(messages = []) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== 'user') continue;
+    const content = messageTextContent(message.content).trim();
+    if (content) return content;
+  }
+  return '';
+}
+
 function systemRulesFromMessages(messages = []) {
   return messages
     .filter((message) => message && message.role === 'system')
@@ -322,13 +332,13 @@ function buildCapabilities() {
   };
 }
 
-function buildMcpPayload(openaiBody) {
+function buildMcpPayload(openaiBody, requestId) {
   const conversationMessages = messagesWithoutSystem(openaiBody.messages);
   const messageContext = buildMessageContext(conversationMessages);
   const toolResults = extractToolResults(openaiBody.messages);
   const prompt = toolResults.length > 0
     ? '{{tool_results: Tool Results}}'
-    : openaiBody.prompt || messageContext.prompt || messagesToPrompt(conversationMessages);
+    : openaiBody.prompt || latestUserPrompt(conversationMessages) || messageContext.prompt || messagesToPrompt(conversationMessages);
   const userRules = [systemRulesFromMessages(openaiBody.messages), openaiBody.userRules]
     .filter(Boolean)
     .join('\n\n');
@@ -338,12 +348,12 @@ function buildMcpPayload(openaiBody) {
     ? String(openaiBody.thread_id)
     : openaiBody.threadId !== undefined
       ? String(openaiBody.threadId)
-      : '';
+      : String(requestId || randomId('thread'));
   const messageType = process.env.KOMBAI_MESSAGE_TYPE || defaultMessageType(openaiBody.model);
 
   const payload = {
     prompt: guardedPrompt,
-    ...(threadId ? { threadId } : {}),
+    threadId,
     workspacePath,
     extensionVersion: EXTENSION_VERSION,
     editor: process.env.KOMBAI_EDITOR || 'vscode',
@@ -353,16 +363,26 @@ function buildMcpPayload(openaiBody) {
     osRelease: '',
     os_system: osSystem(),
     default_shell: process.env.SHELL || '/bin/bash',
+    homedir: os.homedir(),
+    tempDir: path.join(os.tmpdir(), 'kombai'),
+    scrollAnimationEnabled: false,
     techStack: {},
     capabilities: buildCapabilities(),
+    skills: [],
     connectedMcps: [],
+    openTabs: {},
+    repoContext: ['', ''],
+    allRunningCommands: [],
+    fileHistoryHashes: {},
     toolResults,
     userRules,
     modelSize: toKombaiModelSize(openaiBody.model),
     thinkingEffort: openaiBody.reasoning_effort || openaiBody.thinkingEffort || 'medium',
     messageType,
-    planningMode: process.env.KOMBAI_PLANNING_MODE || 'plan_n_chat',
+    planningMode: process.env.KOMBAI_PLANNING_MODE || 'auto',
     writeToDisk: defaultWriteToDisk(openaiBody, messageType),
+    editTimestamp: Date.now(),
+    enableSearchInWorkspace: true,
     userEditedFiles: {},
     figmaToken: '',
     tokenType: 'Public',
@@ -371,8 +391,10 @@ function buildMcpPayload(openaiBody) {
     browserInfo: [],
     browserProfilesInfo: [],
     browserMode: 'off',
+    chromeProfilePath: '',
+    autoCompact: false,
     terminals: [],
-    allowedAbsolutePaths: [workspacePath],
+    allowedAbsolutePaths: [workspacePath, os.tmpdir()],
   };
 
   if (messageType === 'design') {
@@ -394,7 +416,7 @@ function buildChatV2Payload(openaiBody, requestId) {
   const hasMessageContext = Boolean(messageContext.prompt || Object.keys(messageContext.imageAttachments).length > 0);
   const prompt = toolResults.length > 0
     ? '{{tool_results: Tool Results}}'
-    : openaiBody.prompt || messageContext.prompt || messagesToPrompt(conversationMessages);
+    : openaiBody.prompt || latestUserPrompt(conversationMessages) || messageContext.prompt || messagesToPrompt(conversationMessages);
   const userRules = [systemRulesFromMessages(openaiBody.messages), openaiBody.userRules]
     .filter(Boolean)
     .join('\n\n');
@@ -404,7 +426,7 @@ function buildChatV2Payload(openaiBody, requestId) {
     ? String(openaiBody.thread_id)
     : openaiBody.threadId !== undefined
       ? String(openaiBody.threadId)
-      : '';
+      : String(requestId || randomId('thread'));
   const messageType = process.env.KOMBAI_MESSAGE_TYPE || defaultMessageType(openaiBody.model);
 
   const payload = {
@@ -440,16 +462,16 @@ function buildChatV2Payload(openaiBody, requestId) {
     modelSize: toKombaiModelSize(openaiBody.model),
     thinkingEffort: openaiBody.reasoning_effort || openaiBody.thinkingEffort || 'medium',
     messageType,
-    planningMode: process.env.KOMBAI_PLANNING_MODE || 'plan_n_chat',
+    planningMode: process.env.KOMBAI_PLANNING_MODE || 'auto',
     writeToDisk: defaultWriteToDisk(openaiBody, messageType),
+    enableSearchInWorkspace: true,
     figmaToken: '',
     tokenType: 'Public',
     planTechStack: false,
     scrollAnimationEnabled: false,
     messageInitiator: openaiBody.messageInitiator || 'user',
     subAction: 'self_serve_pl',
-    timestamp: Date.now().toString(),
-    requestId,
+    editTimestamp: Date.now(),
     editorState: toolResults.length > 0
       ? { type: 'agent/tool-result' }
       : openaiBody.editorState || (hasMessageContext ? messageContext.editorState : editorStateFromPrompt(guardedPrompt)),

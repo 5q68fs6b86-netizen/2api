@@ -4,7 +4,8 @@
     "chat": "node scripts/chat.js",
     "connect-account": "node scripts/connect-account.js",
     "start": "node server.js",
-    "register": "node scripts/register.js"
+    "register": "node scripts/register.js",
+    "test:claude": "node scripts/test-claude-compat.js"
   },
   "dependencies": {
     "http-proxy-agent": "^9.1.0",

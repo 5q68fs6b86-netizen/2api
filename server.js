@@ -20,10 +20,12 @@ const {
 const { autoRegisterAccount, checkBrowserRuntime } = require('./src/autoRegister');
 const { DEFAULT_KOMBAI_AUTH_URL } = require('./src/kombaiAuth');
 const { getStableFootprintOptions } = require('./src/footprint');
+const { ThreadStore } = require('./src/threadStore');
 
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const accountPool = new AccountPool();
+const threadStore = new ThreadStore();
 
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload, null, 2);
@@ -108,6 +110,16 @@ function finishReasonFor(toolCalls) {
 
 function anthropicStopReason(toolCalls = []) {
   return toolCalls.length > 0 ? 'tool_use' : 'end_turn';
+}
+
+function requestThreadId(body = {}, fallback = '') {
+  return firstNonEmpty(
+    body.thread_id,
+    body.threadId,
+    body.metadata && body.metadata.thread_id,
+    body.metadata && body.metadata.threadId,
+    fallback,
+  );
 }
 
 function estimateTokens(text) {
@@ -476,6 +488,27 @@ function firstNonEmpty(...values) {
   return '';
 }
 
+function redactAdminProgress(value) {
+  if (Array.isArray(value)) return value.map(redactAdminProgress);
+  if (!value || typeof value !== 'object') {
+    if (typeof value !== 'string') return value;
+    return value
+      .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[redacted-email]')
+      .replace(/https?:\/\/[^\s"']+/g, '[redacted-url]')
+      .replace(/\b[a-f0-9]{48,}\b/gi, '[redacted-token]');
+  }
+
+  const output = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (/api.?key|token|password|link|url|email|code/i.test(key)) {
+      output[key] = item ? '[redacted]' : item;
+    } else {
+      output[key] = redactAdminProgress(item);
+    }
+  }
+  return output;
+}
+
 function proxyForAutoRegister(body = {}) {
   const directProxy = firstNonEmpty(
     body.proxyUrl,
@@ -556,7 +589,7 @@ function scheduleStartupAutoFill() {
   setTimeout(async () => {
     console.log('[auto-fill-startup] starting');
     const result = await autoFillPool({}, (progress) => {
-      console.log('[auto-fill-startup]', JSON.stringify(progress));
+      console.log('[auto-fill-startup]', JSON.stringify(redactAdminProgress(progress)));
     });
     const ok = result.results ? result.results.filter((item) => item.success).length : 0;
     const fail = result.results ? result.results.filter((item) => !item.success).length : 0;
@@ -641,6 +674,8 @@ async function handleChatCompletions(req, res) {
   const body = await readJson(req);
   const model = body.model || DEFAULT_OPENAI_MODEL_ID;
   const id = randomId('chatcmpl');
+  const threadId = requestThreadId(body, threadStore.inferThreadId(body.messages) || id);
+  const requestBody = { ...body, model, thread_id: threadId };
 
   if (body.stream) {
     res.writeHead(200, {
@@ -677,7 +712,7 @@ async function handleChatCompletions(req, res) {
 
       try {
         await verifyUsableApiKey(attempt.apiKey, { proxy, footprint: attempt.footprint });
-        for await (const event of streamChatCompletion({ ...body, model }, attempt.apiKey, { requestId: id, proxy, footprint: attempt.footprint })) {
+        for await (const event of streamChatCompletion(requestBody, attempt.apiKey, { requestId: id, proxy, footprint: attempt.footprint })) {
           if (!roleSent) {
             writeSse(res, makeChatChunk({ id, model, delta: { role: 'assistant' } }));
             roleSent = true;
@@ -691,6 +726,7 @@ async function handleChatCompletions(req, res) {
           if (event.type === 'tool_call' && event.toolCall) {
             emitted = true;
             attemptEmitted = true;
+            threadStore.rememberToolCalls(threadId, [event.toolCall]);
             const index = toolCalls.length;
             toolCalls.push(event.toolCall);
             writeSse(res, makeChatChunk({
@@ -737,7 +773,8 @@ async function handleChatCompletions(req, res) {
     return;
   }
 
-  const result = await runCollectWithPool({ ...body, model }, directApiKey, id);
+  const result = await runCollectWithPool(requestBody, directApiKey, id);
+  threadStore.rememberToolCalls(threadId, result.toolCalls);
   sendJson(res, 200, makeChatCompletion({
     id,
     model,
@@ -754,6 +791,8 @@ async function handleAnthropicMessages(req, res) {
   const openaiBody = anthropicToOpenAI(body);
   const model = body.model || openaiBody.model || DEFAULT_OPENAI_MODEL_ID;
   const id = randomId('msg');
+  const threadId = requestThreadId(openaiBody, threadStore.inferThreadId(openaiBody.messages) || id);
+  const requestBody = { ...openaiBody, thread_id: threadId };
 
   if (body.stream) {
     res.writeHead(200, {
@@ -831,7 +870,7 @@ async function handleAnthropicMessages(req, res) {
 
       try {
         await verifyUsableApiKey(attempt.apiKey, { proxy, footprint: attempt.footprint });
-        for await (const event of streamChatCompletion(openaiBody, attempt.apiKey, { requestId: id, proxy, footprint: attempt.footprint })) {
+        for await (const event of streamChatCompletion(requestBody, attempt.apiKey, { requestId: id, proxy, footprint: attempt.footprint })) {
           if (event.type === 'text' && event.text) {
             emitted = true;
             attemptEmitted = true;
@@ -848,6 +887,7 @@ async function handleAnthropicMessages(req, res) {
             emitted = true;
             attemptEmitted = true;
             toolUseEmitted = true;
+            threadStore.rememberToolCalls(threadId, [event.toolCall]);
             stopTextBlock();
             const input = parseToolInput(event.toolCall);
             writeAnthropicSse(res, 'content_block_start', {
@@ -919,7 +959,8 @@ async function handleAnthropicMessages(req, res) {
     return;
   }
 
-  const result = await runCollectWithPool(openaiBody, directApiKey, id);
+  const result = await runCollectWithPool(requestBody, directApiKey, id);
+  threadStore.rememberToolCalls(threadId, result.toolCalls);
   sendJson(res, 200, makeAnthropicMessage({
     id,
     model,
@@ -1393,7 +1434,7 @@ async function handleAdminApi(req, res, url) {
       const result = await autoRegisterAccount(buildAutoRegisterOptions(
         body,
         (progress) => {
-          console.log('[auto-register]', JSON.stringify(progress));
+          console.log('[auto-register]', JSON.stringify(redactAdminProgress(progress)));
         },
         proxy,
       ));
